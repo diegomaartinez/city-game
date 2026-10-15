@@ -2,35 +2,34 @@
 import '@fontsource-variable/rubik';
 import './ui/ui.css';
 import { cache } from './data/cache.ts';
-import { City } from './sim/city.ts';
-import { Traffic } from './sim/traffic.ts';
+import { Game, type SaveData } from './sim/game.ts';
 import { World } from './render/world.ts';
-import { CityRenderer } from './render/cityRenderer.ts';
+import { MapRenderer } from './render/mapRenderer.ts';
+import { TransitRenderer } from './render/transitRenderer.ts';
 import { Tools } from './ui/tools.ts';
 import { Hud } from './ui/hud.ts';
 import { showStart, type StartResult } from './ui/start.ts';
-
-const DAY_SECONDS = 1.2; // segundos reales por día de juego a velocidad normal
 
 async function play(start: StartResult): Promise<void> {
   const world = new World();
   await world.init(document.body);
 
-  const city = new City(start.city);
-  if (start.save) city.loadSave(start.save);
-  const traffic = new Traffic(city);
-  const renderer = new CityRenderer(world, city, traffic);
-  renderer.drawAll();
-  const tools = new Tools(world, city, renderer);
-  const hud = new Hud(city, tools);
-  if (import.meta.env.DEV) Object.assign(window, { __game: { city, world, traffic, tools, hud } });
+  const game = new Game(start.city);
+  const map = new MapRenderer(world, start.city, game.graph);
+  map.drawAll();
+  const transit = new TransitRenderer(world, game);
+  const tools = new Tools(world, game, map, transit);
+  const hud = new Hud(game, tools);
+  if (start.save) game.loadSave(start.save as SaveData);
+  transit.drawNetwork();
   world.centerOn({ x: 0, y: 0 }, Math.min(1.2, Math.min(world.width, world.height) / (start.city.radius * 1.9)));
+  if (import.meta.env.DEV) Object.assign(window, { __game: { game, world, tools, hud, transit } });
 
   let speed = 1;
   hud.onSpeed = s => { speed = s; };
-  hud.onTraffic = on => { renderer.showTraffic = on; };
+  hud.onHeat = on => { transit.showHeat = on; };
 
-  const save = async () => { try { await cache.putSave(start.key, city.toSave()); } catch { /* sin espacio o modo privado */ } };
+  const save = async () => { try { await cache.putSave(start.key, game.toSave()); } catch { /* sin espacio o modo privado */ } };
   let running = true;
   hud.onMenu = async action => {
     if (action === 'save') { await save(); hud.toast('Partida guardada', 'good'); }
@@ -43,24 +42,24 @@ async function play(start: StartResult): Promise<void> {
     }
   };
 
-  // Primeros consejos
   if (!start.save) {
-    hud.toast(`Bienvenido a ${start.city.name}. Pulsa H para ver cómo se juega.`, 'info');
-    setTimeout(() => hud.toast('Para que crezcan zonas nuevas, coloca una central eléctrica y una depuradora (S).', 'info'), 5000);
+    hud.toast(`Bienvenido a ${start.city.name}: ${game.demand.population.toLocaleString('es-ES')} vecinos esperan transporte. Pulsa H para ver cómo se juega.`, 'info');
+    setTimeout(() => hud.toast('Empieza con B (parada de bus) junto a las calles y traza una línea con L.', 'info'), 5000);
   }
 
-  let saveTimer = 0, dateTimer = 0;
+  let saveTimer = 0, hudTimer = 0;
   world.app.ticker.add(ticker => {
     if (!running) return;
     const dt = Math.min(0.1, ticker.deltaMS / 1000);
     if (speed > 0) {
-      const simDt = dt * speed;
-      city.tick(simDt / DAY_SECONDS);
-      traffic.update(simDt * 6); // los coches van a "escala de maqueta": 6 s simulados por segundo
-      dateTimer += dt;
-      if (dateTimer > 0.5) { dateTimer = 0; hud.updateDate(); }
+      // en varios pasos cortos para que a velocidad alta los vehículos no se salten paradas
+      const steps = Math.max(1, Math.ceil(speed));
+      for (let i = 0; i < steps; i++) game.tick((dt * speed) / steps);
     }
-    renderer.updateCars(dt);
+    transit.update(dt, game.now);
+    map.cull();
+    hudTimer += dt;
+    if (hudTimer > 0.25) { hudTimer = 0; hud.refresh(); }
     saveTimer += dt;
     if (saveTimer > 30) { saveTimer = 0; void save(); }
   });

@@ -1,7 +1,7 @@
 // Caché en IndexedDB: la ciudad ya convertida (para no volver a descargar) y las partidas guardadas.
 import type { CityData } from './types.ts';
 
-const DB_NAME = 'city-game';
+const DB_NAME = 'little-transit';
 const DB_VERSION = 1;
 
 function open(): Promise<IDBDatabase> {

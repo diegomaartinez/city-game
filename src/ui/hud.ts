@@ -1,99 +1,84 @@
-// HUD: barra de estado, barra de herramientas, demanda, mensajes, menú y ayuda.
-import type { ServiceKind } from '../data/types.ts';
-import type { City, Stats } from '../sim/city.ts';
-import { SERVICE_DEF } from '../sim/defs.ts';
+// HUD: barra de estado, herramientas, panel de líneas, mensajes, informe diario, menú y ayuda.
+import type { DayReport, Game } from '../sim/game.ts';
+import { LINE_COLORS, MODE, type Line, type Stop } from '../sim/transit.ts';
 import type { Hover, Tool, Tools } from './tools.ts';
 
 const ICONS: Record<string, string> = {
   pan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/></svg>',
-  zoneR: '<svg viewBox="0 0 24 24" fill="#7fc47c" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-6h4v6" fill="#f7e8d2"/></svg>',
-  zoneC: '<svg viewBox="0 0 24 24" fill="#5a9be8" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h3v3H8zM13 8h3v3h-3zM8 13h3v3H8zM13 13h3v3h-3z" fill="#f7e8d2"/></svg>',
-  zoneI: '<svg viewBox="0 0 24 24" fill="#e8b23c" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 20V9l6 4V9l6 4V9l6 4v7z"/><rect x="4" y="3" width="3" height="7" fill="#3b3b40"/></svg>',
-  dezone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 3"/><path d="M8 8l8 8M16 8l-8 8" stroke="#d23b33"/></svg>',
-  road: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 21L10 3M18 21L14 3" /><path d="M12 6v3M12 12v3M12 18v3" stroke="#e88a82"/></svg>',
-  bulldoze: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16M6 20V9h8v11M14 13h5v7" fill="#f3d6af"/><path d="M8 20v-4" /><path d="M16 4l4 4M20 4l-4 4" stroke="#d23b33"/></svg>',
-  services: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5L12 15.6 7.1 18.2l.9-5.5-4-3.9L9.5 8z" fill="#f0bf3c"/></svg>',
-  traffic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="18" height="8" rx="3" fill="#e88a82"/><circle cx="7" cy="18" r="2" fill="#3b3b40"/><circle cx="17" cy="18" r="2" fill="#3b3b40"/><path d="M6 9l2-4h8l2 4"/></svg>',
+  'stop:bus': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="16" height="14" rx="3" fill="#f7e8d2"/><path d="M4 10h16" /><rect x="7" y="7" width="4" height="2" fill="#2a2522"/><rect x="13" y="7" width="4" height="2" fill="#2a2522"/><circle cx="8" cy="19" r="1.6" fill="#2a2522"/><circle cx="16" cy="19" r="1.6" fill="#2a2522"/><path d="M9 13h6" stroke="#e88a82" stroke-width="2.5"/></svg>',
+  'stop:metro': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="8" fill="#ffffff"/><path d="M8 16V8l4 5 4-5v8" stroke="#2f6fc4" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  'line:bus': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 18c4 0 4-12 8-12s4 12 8 12" stroke="#d23b33" stroke-width="3"/><circle cx="4" cy="18" r="2.5" fill="#f7e8d2"/><circle cx="12" cy="6" r="2.5" fill="#f7e8d2"/><circle cx="20" cy="18" r="2.5" fill="#f7e8d2"/></svg>',
+  'line:metro': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 18L12 6l8 12" stroke="#2f6fc4" stroke-width="3.5"/><circle cx="4" cy="18" r="2.8" fill="#ffffff"/><circle cx="12" cy="6" r="2.8" fill="#ffffff"/><circle cx="20" cy="18" r="2.8" fill="#ffffff"/></svg>',
+  remove: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7" fill="#f7e8d2"/><path d="M8 8l8 8M16 8l-8 8" stroke="#d23b33"/></svg>',
+  heat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8" fill="#e88a82" opacity=".5"/><circle cx="12" cy="12" r="4" fill="#d23b33"/></svg>',
   menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
   help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/></svg>',
 };
 
-const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-
 const fmt = (n: number) => Math.round(n).toLocaleString('es-ES');
+const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 
 export class Hud {
   readonly root = document.createElement('div');
   speed = 1;
   onSpeed: (s: number) => void = () => undefined;
   onMenu: (action: 'save' | 'exit') => void = () => undefined;
-  onTraffic: (on: boolean) => void = () => undefined;
+  onHeat: (on: boolean) => void = () => undefined;
   private els: Record<string, HTMLElement> = {};
   private toolButtons = new Map<string, HTMLButtonElement>();
-  private submenu!: HTMLElement;
-  private roadmenu!: HTMLElement;
+  private panelStop: Stop | null = null;
 
-  constructor(private city: City, private tools: Tools) {
+  constructor(private game: Game, private tools: Tools) {
     this.root.id = 'hud';
     this.root.innerHTML = `
       <div id="topbar" class="card">
         <span class="city" id="cityName"></span>
-        <div class="stat"><b id="date"></b><small>fecha</small></div>
+        <div class="stat"><b id="clock"></b><small id="dayLabel">día 1</small></div>
         <div class="stat"><b id="money"></b><small>dinero</small></div>
-        <div class="stat"><b id="pop"></b><small>habitantes</small></div>
-        <div class="stat"><b id="jobs"></b><small>empleos</small></div>
-        <div class="stat"><b id="happy"></b><small>felicidad</small></div>
+        <div class="stat"><b id="delivered"></b><small>viajes hoy</small></div>
+        <div class="stat"><b id="riding"></b><small>a bordo</small></div>
+        <div class="stat"><b id="waiting"></b><small>esperando</small></div>
+        <div class="stat"><b id="satis"></b><small>satisfacción</small></div>
         <div id="speed">
           <button class="btn" data-speed="0" title="Pausa (espacio)">⏸</button>
           <button class="btn active" data-speed="1" title="Velocidad normal">▶</button>
-          <button class="btn" data-speed="2" title="Rápido">▶▶</button>
-          <button class="btn" data-speed="4" title="Muy rápido">▶▶▶</button>
+          <button class="btn" data-speed="2" title="Rápido (2)">▶▶</button>
+          <button class="btn" data-speed="4" title="Muy rápido (3)">▶▶▶</button>
         </div>
       </div>
       <div id="topright">
-        <button class="btn tool" id="trafficBtn" title="Ver tráfico (G)">${ICONS.traffic}</button>
+        <button class="btn tool" id="heatBtn" title="Demanda sin cubrir (G)">${ICONS.heat}</button>
         <button class="btn tool" id="helpBtn" title="Ayuda (H)">${ICONS.help}</button>
         <button class="btn tool" id="menuBtn" title="Menú (Esc)">${ICONS.menu}</button>
       </div>
       <div id="toolbar" class="card"></div>
-      <div id="submenu" class="card hidden"></div>
-      <div id="roadmenu" class="card hidden"></div>
+      <div id="panel" class="card hidden"></div>
       <div id="hint" class="card"></div>
       <div id="info" class="card hidden"></div>
-      <div id="demand" class="card" title="Demanda de zonas: residencial, comercial e industrial">
-        <div class="d"><div class="track r"><div></div></div>R</div>
-        <div class="d"><div class="track c"><div></div></div>C</div>
-        <div class="d"><div class="track i"><div></div></div>I</div>
-      </div>
       <div id="toasts"></div>`;
     document.body.appendChild(this.root);
-    for (const id of ['cityName', 'date', 'money', 'pop', 'jobs', 'happy', 'hint', 'info', 'toasts', 'demand']) this.els[id] = this.root.querySelector('#' + id)!;
-    this.els.cityName.textContent = city.data.name;
-    this.submenu = this.root.querySelector('#submenu')!;
-    this.roadmenu = this.root.querySelector('#roadmenu')!;
+    for (const id of ['cityName', 'clock', 'dayLabel', 'money', 'delivered', 'riding', 'waiting', 'satis', 'hint', 'info', 'toasts', 'panel']) this.els[id] = this.root.querySelector('#' + id)!;
+    this.els.cityName.textContent = game.data.name;
     this.buildToolbar();
-    this.buildSubmenus();
 
-    this.root.querySelectorAll<HTMLButtonElement>('#speed .btn').forEach(b => {
-      b.onclick = () => this.setSpeed(+b.dataset.speed!);
-    });
+    this.root.querySelectorAll<HTMLButtonElement>('#speed .btn').forEach(b => { b.onclick = () => this.setSpeed(+b.dataset.speed!); });
     (this.root.querySelector('#menuBtn') as HTMLButtonElement).onclick = () => this.openMenu();
     (this.root.querySelector('#helpBtn') as HTMLButtonElement).onclick = () => this.openHelp();
-    const trafficBtn = this.root.querySelector('#trafficBtn') as HTMLButtonElement;
-    trafficBtn.onclick = () => { trafficBtn.classList.toggle('active'); this.onTraffic(trafficBtn.classList.contains('active')); };
+    const heatBtn = this.root.querySelector('#heatBtn') as HTMLButtonElement;
+    heatBtn.onclick = () => { heatBtn.classList.toggle('active'); this.onHeat(heatBtn.classList.contains('active')); };
 
-    city.on('stats', s => this.updateStats(s));
-    city.on('money', m => { this.els.money.textContent = fmt(m) + ' €'; });
-    city.on('message', (t, k) => this.toast(t, k));
+    game.on('money', m => { this.els.money.textContent = fmt(m) + ' €'; });
+    game.on('message', (t, k) => this.toast(t, k));
+    game.on('network', () => this.renderPanel());
+    game.on('day', r => this.dayReport(r));
     tools.onToolChange = t => this.markTool(t);
     tools.onHint = t => { this.els.hint.textContent = t; };
     tools.onHover = h => this.showHover(h);
-    this.updateStats(city.stats);
-    this.els.money.textContent = fmt(city.money) + ' €';
-    this.updateDate();
+    tools.onSelect = (line, stop) => { this.panelStop = stop; this.renderPanel(line); };
+    this.els.money.textContent = fmt(game.money) + ' €';
     this.markTool('pan');
     this.els.hint.textContent = tools.hintFor('pan');
-
+    this.refresh();
     window.addEventListener('keydown', e => this.key(e));
   }
 
@@ -101,9 +86,9 @@ export class Hud {
     const bar = this.root.querySelector('#toolbar')!;
     const items: Array<[string, string, string] | 'sep'> = [
       ['pan', 'Mover y ver', '1'], 'sep',
-      ['zoneR', 'Zona residencial', 'R'], ['zoneC', 'Zona comercial', 'C'], ['zoneI', 'Zona industrial', 'I'], ['dezone', 'Quitar zona', 'X'], 'sep',
-      ['road', 'Trazar calle', 'T'], ['bulldoze', 'Demoler', 'D'], 'sep',
-      ['services', 'Servicios', 'S'],
+      ['stop:bus', 'Parada de bus', 'B'], ['line:bus', 'Nueva línea de bus', 'L'], 'sep',
+      ['stop:metro', 'Estación de metro', 'M'], ['line:metro', 'Nueva línea de metro', 'K'], 'sep',
+      ['remove', 'Quitar parada', 'D'],
     ];
     for (const it of items) {
       if (it === 'sep') { const s = document.createElement('div'); s.className = 'sep'; bar.appendChild(s); continue; }
@@ -118,47 +103,17 @@ export class Hud {
     }
   }
 
-  private buildSubmenus(): void {
-    const kinds: ServiceKind[] = ['power', 'water', 'police', 'fire', 'health', 'school', 'park'];
-    for (const k of kinds) {
-      const d = SERVICE_DEF[k];
-      const b = document.createElement('button');
-      b.className = 'btn';
-      b.innerHTML = `<span><span style="display:inline-block;width:10px;height:10px;border:1.5px solid var(--ink);border-radius:3px;background:${d.color};margin-right:6px"></span>${d.name}</span><small>${fmt(d.cost)} €</small>`;
-      b.onclick = () => { this.tools.setTool(`service:${k}`); this.markSub(b); };
-      this.submenu.appendChild(b);
-    }
-    const roads: Array<[string, string]> = [['residential', 'Calle · 60 €/m'], ['secondary', 'Avenida · 120 €/m'], ['primary', 'Vía principal · 200 €/m']];
-    for (const [cls, label] of roads) {
-      const b = document.createElement('button');
-      b.className = 'btn' + (cls === 'residential' ? ' active' : '');
-      b.textContent = label;
-      b.onclick = () => { this.tools.roadClass = cls as never; this.roadmenu.querySelectorAll('.btn').forEach(x => x.classList.remove('active')); b.classList.add('active'); this.tools.setTool('road'); };
-      this.roadmenu.appendChild(b);
-    }
-  }
-
-  private markSub(b: HTMLButtonElement): void {
-    this.submenu.querySelectorAll('.btn').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-  }
-
   pick(id: string): void {
-    if (id === 'services') {
-      const open = this.submenu.classList.toggle('hidden');
-      this.roadmenu.classList.add('hidden');
-      if (!open) this.tools.setTool(this.tools.tool.startsWith('service:') ? this.tools.tool : 'service:power');
-      return;
-    }
-    this.submenu.classList.add('hidden');
-    if (id === 'road') this.roadmenu.classList.toggle('hidden'); else this.roadmenu.classList.add('hidden');
-    this.tools.setTool(id as Tool);
+    if (id === 'line:bus') this.tools.startLine('bus');
+    else if (id === 'line:metro') this.tools.startLine('metro');
+    else this.tools.setTool(id as Tool);
   }
 
   private markTool(t: Tool): void {
-    for (const [id, b] of this.toolButtons) b.classList.toggle('active', id === t || (id === 'services' && t.startsWith('service:')));
-    if (!t.startsWith('service:')) this.submenu.classList.add('hidden');
-    if (t !== 'road') this.roadmenu.classList.add('hidden');
+    for (const [id, b] of this.toolButtons) {
+      const active = id === t || (t === 'line' && this.tools.editing && id === `line:${this.tools.editing.mode}`);
+      b.classList.toggle('active', !!active);
+    }
   }
 
   setSpeed(s: number): void {
@@ -170,37 +125,101 @@ export class Hud {
   private key(e: KeyboardEvent): void {
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
     const k = e.key.toLowerCase();
-    if (k === 'escape') { if (document.querySelector('.modal')) { document.querySelector('.modal')?.remove(); return; } if (this.tools.tool !== 'pan') this.tools.cancel(); else this.openMenu(); return; }
-    const map: Record<string, string> = { '1': 'pan', r: 'zoneR', c: 'zoneC', i: 'zoneI', x: 'dezone', t: 'road', d: 'bulldoze', s: 'services' };
+    if (k === 'escape') {
+      const m = document.querySelector('.modal');
+      if (m) { m.remove(); return; }
+      if (this.tools.tool !== 'pan' || this.tools.selected) this.tools.cancel(); else this.openMenu();
+      return;
+    }
+    if (k === 'enter' && this.tools.tool === 'line') { this.tools.finishLine(); this.tools.setTool('pan'); return; }
+    const map: Record<string, string> = { '1': 'pan', b: 'stop:bus', m: 'stop:metro', l: 'line:bus', k: 'line:metro', d: 'remove' };
     if (map[k]) { this.pick(map[k]); return; }
     if (k === ' ') { e.preventDefault(); this.setSpeed(this.speed === 0 ? 1 : 0); return; }
-    if (k === 'g') { (this.root.querySelector('#trafficBtn') as HTMLButtonElement).click(); return; }
+    if (k === 'g') { (this.root.querySelector('#heatBtn') as HTMLButtonElement).click(); return; }
     if (k === 'h') { this.openHelp(); return; }
     if (k === '2') this.setSpeed(2); else if (k === '3') this.setSpeed(4);
   }
 
-  updateDate(): void {
-    const d = Math.floor(this.city.day);
-    const day = (d % 30) + 1, month = Math.floor(d / 30) % 12, year = Math.floor(d / 360) + 1;
-    this.els.date.textContent = `${day} ${MONTHS[month].slice(0, 3)} · año ${year}`;
+  /** Datos que cambian cada frame (se llama unas pocas veces por segundo). */
+  refresh(): void {
+    const g = this.game;
+    this.els.clock.textContent = g.clock;
+    this.els.dayLabel.textContent = `día ${g.day}`;
+    this.els.delivered.textContent = fmt(g.today.delivered);
+    this.els.waiting.textContent = fmt(g.net.waiting);
+    this.els.riding.textContent = fmt(g.net.riding);
+    this.els.satis.textContent = g.satisfaction + '%';
+    if (this.tools.selected && !this.els.panel.classList.contains('hidden')) {
+      const l = this.tools.selected;
+      const rid = this.els.panel.querySelector('#riding');
+      if (rid) rid.textContent = `${l.vehicles.reduce((a, v) => a + v.passengers.length, 0)} a bordo · ${fmt(l.boarded)} viajes`;
+    }
   }
 
-  private updateStats(s: Stats): void {
-    this.els.pop.textContent = fmt(s.population);
-    this.els.jobs.textContent = fmt(s.jobs);
-    this.els.happy.textContent = Math.round(s.happiness) + '%';
-    const tracks = this.els.demand.querySelectorAll<HTMLElement>('.track');
-    const vals = [s.demand.R, s.demand.C, s.demand.I];
-    tracks.forEach((t, i) => {
-      const v = vals[i];
-      t.classList.toggle('neg', v < 0);
-      (t.firstElementChild as HTMLElement).style.height = `${Math.min(50, Math.abs(v) * 50)}%`;
+  // ───────────── panel de líneas ─────────────
+  private renderPanel(selected: Line | null = this.tools.selected): void {
+    const panel = this.els.panel;
+    const lines = [...this.game.net.lines.values()];
+    const stop = this.panelStop;
+    if (!lines.length && !stop) { panel.classList.add('hidden'); return; }
+    panel.classList.remove('hidden');
+    let html = '';
+    if (stop && this.game.net.stops.has(stop.id)) {
+      html += `<div class="ptitle">${stop.name}</div><div class="muted">${MODE[stop.mode].stopName} · ${stop.queue.length} esperando</div>
+        <div class="prow"><button class="btn small" data-act="removeStop">Quitar parada</button></div><div class="sep"></div>`;
+    }
+    html += `<div class="ptitle">Líneas</div>`;
+    if (!lines.length) html += `<div class="muted">Aún no hay líneas. Pon paradas y traza una con L o K.</div>`;
+    for (const l of lines) {
+      const sel = l === selected;
+      html += `<div class="line ${sel ? 'sel' : ''}" data-line="${l.id}">
+        <span class="dot" style="background:${hex(l.color)}"></span>
+        <span class="lname">${l.name}</span>
+        <span class="muted">${l.stops.length} par · ${l.vehicles.length} veh</span>
+      </div>`;
+      if (sel) {
+        const def = MODE[l.mode];
+        const names = l.stops.map(id => this.game.net.stops.get(id)?.name ?? '?').join(' → ') + (l.loop ? ' ↻' : '');
+        html += `<div class="ldetail">
+          <div class="muted small">${names || 'sin paradas'}</div>
+          <div class="muted small" id="riding"></div>
+          ${l.warnings ? `<div class="warn small">${l.warnings} tramo(s) sin ruta por calles</div>` : ''}
+          <div class="prow">
+            <span>Vehículos</span>
+            <button class="btn small" data-act="veh-">−</button><b>${l.vehicles.length}</b><button class="btn small" data-act="veh+" title="${fmt(def.vehicleCost)} € + ${fmt(def.upkeep)} €/día">+</button>
+          </div>
+          <div class="prow">
+            ${l.loop ? '' : '<button class="btn small" data-act="extend">Ampliar</button>'}
+            <button class="btn small" data-act="dropLast">Quitar última</button>
+            <button class="btn small" data-act="delete">Borrar</button>
+          </div>
+          <div class="prow colors">${LINE_COLORS.map(c => `<span class="sw ${c === l.color ? 'on' : ''}" data-color="${c}" style="background:${hex(c)}"></span>`).join('')}</div>
+        </div>`;
+      }
+    }
+    panel.innerHTML = html;
+    panel.querySelectorAll<HTMLElement>('.line').forEach(el => { el.onclick = () => { const l = this.game.net.lines.get(+el.dataset.line!); this.panelStop = null; this.tools.select(l === this.tools.selected ? null : l ?? null); }; });
+    panel.querySelectorAll<HTMLElement>('.sw').forEach(el => { el.onclick = () => { if (selected) { selected.color = +el.dataset.color!; this.tools.select(selected); } }; });
+    panel.querySelectorAll<HTMLButtonElement>('[data-act]').forEach(b => {
+      b.onclick = () => {
+        const act = b.dataset.act!;
+        if (act === 'removeStop' && stop) { this.game.removeStop(stop.id); this.panelStop = null; this.tools.select(this.game.net.lines.has(selected?.id ?? -1) ? selected : null); return; }
+        if (!selected) return;
+        switch (act) {
+          case 'veh+': this.game.addVehicle(selected); break;
+          case 'veh-': this.game.removeVehicle(selected); break;
+          case 'extend': this.tools.extendLine(selected); break;
+          case 'dropLast': { const last = selected.stops[selected.stops.length - 1]; if (last !== undefined) this.game.removeStopFromLine(selected, last); if (!this.game.net.lines.has(selected.id)) this.tools.select(null); else this.tools.select(selected); break; }
+          case 'delete': this.game.removeLine(selected); this.tools.select(null); break;
+        }
+      };
     });
+    this.refresh();
   }
 
-  private showHover(h: Hover): void {
+  private showHover(h: Hover | null): void {
     const info = this.els.info;
-    if (!h.text) { info.classList.add('hidden'); return; }
+    if (!h || !h.text) { info.classList.add('hidden'); return; }
     info.classList.remove('hidden');
     info.innerHTML = `<b>${h.text}</b>${h.sub ? `<div class="muted">${h.sub}</div>` : ''}`;
   }
@@ -211,7 +230,12 @@ export class Hud {
     t.textContent = text;
     this.els.toasts.appendChild(t);
     while (this.els.toasts.children.length > 4) this.els.toasts.firstElementChild!.remove();
-    setTimeout(() => t.remove(), 4000);
+    setTimeout(() => t.remove(), 4500);
+  }
+
+  private dayReport(r: DayReport): void {
+    const net = r.income - r.upkeep;
+    this.toast(`Día ${r.day}: ${fmt(r.delivered)} viajes, ${r.satisfaction}% satisfechos · ${net >= 0 ? '+' : ''}${fmt(net)} € (billetes ${fmt(r.income)}, mantenimiento ${fmt(r.upkeep)})`, net >= 0 ? 'good' : 'warn');
   }
 
   private modal(html: string): HTMLElement {
@@ -227,11 +251,14 @@ export class Hud {
   openMenu(): void {
     const was = this.speed;
     this.setSpeed(0);
-    const m = this.modal(`<h2>Little Cities</h2><div class="stack">
+    const days = this.game.days.slice(-7).reverse();
+    const rows = days.map(d => `<tr><td>Día ${d.day}</td><td>${fmt(d.delivered)}</td><td>${d.satisfaction}%</td><td>${fmt(d.income - d.upkeep)} €</td></tr>`).join('');
+    const m = this.modal(`<h2>Little Transit</h2><div class="stack">
       <button class="btn primary" id="resume">Seguir jugando</button>
       <button class="btn" id="save">Guardar partida</button>
       <button class="btn" id="help">Cómo se juega</button>
       <button class="btn" id="exit">Cambiar de ciudad</button></div>
+      ${rows ? `<table class="report"><tr><th></th><th>viajes</th><th>satisf.</th><th>balance</th></tr>${rows}</table>` : ''}
       <p class="muted" style="font-size:12px;opacity:.7">La partida se guarda sola cada medio minuto en este navegador.</p>`);
     const close = () => { m.remove(); this.setSpeed(was || 1); };
     (m.querySelector('#resume') as HTMLButtonElement).onclick = close;
@@ -242,14 +269,14 @@ export class Hud {
 
   openHelp(): void {
     const m = this.modal(`<h2>Cómo se juega</h2>
-      <p>Esta es una ciudad de verdad: sus calles y edificios vienen de OpenStreetMap. Tú decides cómo crece.</p>
+      <p>La ciudad es de verdad. Sus vecinos quieren ir de casa (edificios crema) al trabajo, las tiendas y los equipamientos (azules, oliva y coral), y vuelven por la tarde. Tu trabajo es moverlos.</p>
       <ul>
-        <li><b>Zonifica</b> terreno libre junto a una calle como residencial <kbd>R</kbd>, comercial <kbd>C</kbd> o industrial <kbd>I</kbd>. Cuando haya demanda (barras de abajo a la derecha), se construirán edificios.</li>
-        <li>Las zonas nuevas necesitan <b>luz y agua</b>: coloca una central eléctrica y una depuradora desde <b>Servicios</b> <kbd>S</kbd>. Los edificios que ya existían funcionan sin ellas.</li>
-        <li><b>Traza calles</b> <kbd>T</kbd> para abrir terreno nuevo y aliviar el tráfico; <b>demuele</b> <kbd>D</kbd> lo que te estorbe.</li>
-        <li>Comisarías, bomberos, centros de salud, colegios y parques suben la <b>felicidad</b>, y con ella llegan más vecinos.</li>
-        <li>Los coches van de casa al trabajo. Pulsa <kbd>G</kbd> para ver qué calles se atascan.</li>
-        <li>Cada mes cobras impuestos y pagas el mantenimiento. <kbd>Espacio</kbd> pausa; <kbd>2</kbd> y <kbd>3</kbd> aceleran el tiempo.</li>
+        <li><b>Paradas</b>: <kbd>B</kbd> pone una parada de bus junto a una calle; <kbd>M</kbd> una estación de metro donde quieras. Cada parada atrae a los vecinos que viven a unos minutos a pie.</li>
+        <li><b>Líneas</b>: <kbd>L</kbd> (bus) o <kbd>K</kbd> (metro) y haz clic en las paradas por orden. El bus sigue las calles reales; el metro va en línea recta por túnel. Clic en la primera parada para cerrar un bucle; <kbd>Enter</kbd> para terminar.</li>
+        <li>En el panel de la derecha añades <b>vehículos</b> a cada línea, la amplías, cambias su color o la borras.</li>
+        <li>Los viajeros esperan en las paradas (puntitos) y hacen <b>transbordo</b> si hace falta. Si esperan demasiado se van, y si no tienen parada cerca aparecen como puntos coral: pulsa <kbd>G</kbd> para ver dónde falta servicio.</li>
+        <li>Cada viaje completado paga billete; cada vehículo cuesta mantenimiento diario. Al final del día recibes el informe.</li>
+        <li><kbd>Espacio</kbd> pausa; <kbd>2</kbd> y <kbd>3</kbd> aceleran. Hay horas punta por la mañana y por la tarde, y la demanda crece un poco cada día.</li>
       </ul>
       <div class="stack"><button class="btn primary" id="ok">¡Entendido!</button></div>`);
     (m.querySelector('#ok') as HTMLButtonElement).onclick = () => m.remove();

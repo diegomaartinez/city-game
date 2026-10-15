@@ -6,8 +6,8 @@ export type RoadClass = 'motorway' | 'primary' | 'secondary' | 'tertiary' | 'res
 
 export type BuildingUse = 'residential' | 'commercial' | 'industrial' | 'public';
 
-/** Servicios que dan cobertura a su alrededor. */
-export type ServiceKind = 'power' | 'water' | 'police' | 'fire' | 'health' | 'school' | 'park';
+/** Equipamientos reconocidos en el mapa. */
+export type ServiceKind = 'police' | 'fire' | 'health' | 'school';
 
 export interface RoadWay {
   id: number;
@@ -16,8 +16,10 @@ export interface RoadWay {
   oneway: boolean;
   /** Puntos en metros. */
   pts: Pt[];
-  /** Ids de nodo OSM (o ids negativos para nodos creados por el jugador), uno por punto. */
+  /** Ids de nodo OSM, uno por punto. */
   nodes: number[];
+  /** Nivel: <0 túnel, 0 a ras de suelo, >0 puente. */
+  layer: number;
 }
 
 export interface Building {
@@ -30,9 +32,7 @@ export interface Building {
   /** Centroide. */
   cx: number;
   cy: number;
-  /** 'osm' viene del mapa real; 'built' lo ha construido la simulación. */
-  origin: 'osm' | 'built';
-  /** Si el edificio real es un equipamiento, qué cobertura ofrece. */
+  /** Si el edificio es un equipamiento, de qué tipo. */
   service?: ServiceKind;
   name?: string;
 }

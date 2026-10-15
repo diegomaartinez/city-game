@@ -4,11 +4,11 @@ import { searchPlaces, type Place } from '../data/nominatim.ts';
 import { fetchOsm } from '../data/overpass.ts';
 import { parseOsm } from '../data/parse.ts';
 import type { CityData } from '../data/types.ts';
-import type { SaveData } from '../sim/city.ts';
+import type { SaveData } from '../sim/game.ts';
 
 export interface StartResult { city: CityData; key: string; save?: SaveData }
 
-const GAME_NAME = 'Little Cities';
+const GAME_NAME = 'Little Transit';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -23,8 +23,8 @@ export function showStart(): Promise<StartResult> {
     root.id = 'start';
     root.innerHTML = `
       <div class="panel card">
-        <h1>Little <span>Cities</span></h1>
-        <p class="tagline">Elige una ciudad real y hazla crecer a tu manera. Tranquilo, sin prisas.</p>
+        <h1>Little <span>Transit</span></h1>
+        <p class="tagline">Elige una ciudad real y diseña su red de bus y metro. Tranquilo, sin prisas.</p>
         <div class="search">
           <input id="q" type="text" placeholder="Busca una ciudad… (Madrid, Lugo, Lisboa)" autocomplete="off" />
           <ul class="results card hidden" id="results"></ul>
@@ -161,7 +161,7 @@ export function showStart(): Promise<StartResult> {
         const key = cityKey(c.lat, c.lon, c.radius);
         const save = await cache.getSave<SaveData>(key);
         const li = el('li');
-        const info = save ? `día ${Math.floor(save.day) + 1}` : 'sin empezar';
+        const info = save ? `día ${Math.floor(save.minute / 1440) + 1}` : 'sin empezar';
         li.innerHTML = `<span><b>${c.name}</b> · ${fmtKm(c.radius)} · <small>${info}</small></span>`;
         const play = el('button', 'btn small', save ? 'Continuar' : 'Jugar');
         play.onclick = () => finish({ city: c, key, save });

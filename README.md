@@ -1,28 +1,25 @@
-# Little Cities
+# Little Transit
 
-**Construye sobre ciudades de verdad, sin prisas.** Busca una ciudad (Madrid, Lugo, Lisboa…), el juego descarga sus calles y edificios reales de OpenStreetMap y, a partir de ahí, la ciudad es tuya: recalifica terrenos, traza calles, coloca servicios y mira cómo crece y cómo se mueve el tráfico.
+**Diseña el transporte de ciudades de verdad, sin prisas.** Busca una ciudad (Madrid, Lugo, Lisboa…), el juego descarga sus calles y edificios reales de OpenStreetMap y, a partir de ahí, los vecinos quieren moverse: pon paradas, traza líneas de bus y metro, añade vehículos y consigue que lleguen a tiempo. Al estilo de *Mini Metro*, pero sobre el plano real.
 
 Estética *cozy* de maqueta, con la misma paleta que [Little Drives](https://littledrives.com/): arena, tinta, crema y coral.
 
 ## Cómo se juega
 
-- **Elige una ciudad** y un radio (0,5–3 km). Los edificios existentes ya están habitados: el juego infiere si son viviendas, comercios, industria o equipamientos a partir de las etiquetas del mapa.
-- **Zonifica** terreno libre junto a una calle como residencial, comercial o industrial. Cuando hay demanda (barras R/C/I), se construyen edificios, que crecen en altura si se llenan.
-- **Recalifica**: pinta una zona sobre edificios existentes y, cuando haya demanda del nuevo uso, se irán derribando y reconstruyendo.
-- Las zonas nuevas necesitan **luz y agua** (central eléctrica y depuradora). Comisarías, bomberos, centros de salud, colegios y parques suben la **felicidad**, y con ella la ocupación.
-- **Traza calles** (calle, avenida o vía principal) y **demuele** lo que estorbe, edificio a edificio o por áreas.
-- **Tráfico**: los coches van de casa al trabajo por las calles reales; los tramos saturados se ven con la capa de tráfico (`G`).
-- Cada mes cobras impuestos y pagas mantenimiento. La partida se guarda sola en el navegador.
+- **La ciudad genera viajeros**: las viviendas (crema) emiten viajes hacia comercios (azul), industria (oliva) y equipamientos (coral) por la mañana, y a la inversa por la tarde. La demanda crece un poco cada día.
+- **Paradas**: una parada de bus se pega a la calle más cercana; una estación de metro va donde quieras. Cada una atrae a quien vive a unos minutos a pie (330 m el bus, 500 m el metro).
+- **Líneas**: elige bus o metro y haz clic en las paradas por orden. El **bus** recorre las calles reales (respeta los sentidos únicos cuando puede); el **metro** une estaciones en línea recta por túnel, que se paga por metro. Clic en la primera parada para cerrar un bucle; si no, la línea va y vuelve.
+- **Vehículos**: cada línea arranca con uno; añade más desde el panel. Tienen capacidad y velocidad distintas y cuestan mantenimiento diario.
+- **Viajeros**: esperan en las paradas (puntitos), hacen transbordo si hace falta y se van si esperan demasiado. Los que no tienen parada cerca aparecen como puntos coral; `G` muestra el mapa de demanda sin cubrir.
+- **Dinero**: cada viaje completado paga billete; al final del día recibes el informe (viajes, satisfacción, balance).
 
 | Acción | Tecla |
 |---|---|
-| Mover / ver detalles | `1` (o botón derecho / central del ratón en cualquier herramienta) |
-| Zona residencial / comercial / industrial | `R` `C` `I` |
-| Quitar zona | `X` |
-| Trazar calle | `T` |
-| Demoler | `D` |
-| Servicios | `S` |
-| Capa de tráfico | `G` |
+| Mover / seleccionar | `1` (botón derecho o central del ratón en cualquier herramienta) |
+| Parada de bus / estación de metro | `B` / `M` |
+| Nueva línea de bus / de metro | `L` / `K` (clic en las paradas; `Enter` termina) |
+| Quitar parada | `D` |
+| Demanda sin cubrir | `G` |
 | Pausa · rápido · muy rápido | `Espacio` · `2` · `3` |
 | Menú / cancelar | `Esc` |
 
@@ -34,9 +31,9 @@ npm run dev      # http://localhost:5173
 npm run build    # comprueba tipos y genera dist/
 ```
 
-- **Vite + TypeScript + PixiJS 8** (WebGL). Sin motor de juego: el mundo se dibuja con `Graphics` por capas y los edificios por teselas de 256 m.
-- **Datos**: [Nominatim](https://nominatim.org/) para buscar la ciudad y la [API Overpass](https://overpass-api.de/) para calles, edificios, parques y agua (`src/data/overpass.ts`, con varios servidores de respaldo). Todo se proyecta a metros alrededor del centro (`src/data/geo.ts`) y se guarda en IndexedDB (`src/data/cache.ts`).
-- **Simulación** (`src/sim/`): rejilla de celdas de 12 m (`grid.ts`), grafo de calles con A* (`graph.ts`), reglas de crecimiento, servicios y economía (`city.ts`, parámetros en `defs.ts`) y tráfico (`traffic.ts`).
+- **Vite + TypeScript + PixiJS 8** (WebGL). Sin motor de juego: el mapa se dibuja con `Graphics` por capas y teselas, y solo se renderizan las teselas visibles.
+- **Datos** (`src/data/`): [Nominatim](https://nominatim.org/) para buscar la ciudad y la [API Overpass](https://overpass-api.de/) para calles (con puentes y túneles), edificios, parques y agua, con varios servidores de respaldo. Todo se proyecta a metros alrededor del centro (`geo.ts`) y se guarda en IndexedDB (`cache.ts`).
+- **Simulación** (`src/sim/`): grafo de calles con A* (`graph.ts`), red de transporte con paradas, líneas, vehículos y planificación de viajes con transbordos (`transit.ts`), generación de demanda a partir de los edificios (`demand.ts`) y estado de la partida, economía e informes (`game.ts`).
 - **Render** (`src/render/`) e **interfaz** (`src/ui/`, DOM encima del canvas).
 
 Datos del mapa © colaboradores de [OpenStreetMap](https://www.openstreetmap.org/copyright), licencia ODbL.

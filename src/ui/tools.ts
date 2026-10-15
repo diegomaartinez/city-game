@@ -1,34 +1,35 @@
-// Herramientas del jugador: mover la cámara, zonificar, trazar calles, demoler y colocar servicios.
+// Herramientas: mover la cámara, poner paradas, trazar líneas y quitar paradas.
 import { Graphics } from 'pixi.js';
-import type { Pt, RoadClass, ServiceKind } from '../data/types.ts';
-import type { City } from '../sim/city.ts';
-import { CELL, Kind, Zone } from '../sim/grid.ts';
-import { ROAD_WIDTH } from '../sim/graph.ts';
-import { SERVICE_DEF } from '../sim/defs.ts';
-import type { CityRenderer } from '../render/cityRenderer.ts';
+import type { Pt } from '../data/types.ts';
+import { pointSegment } from '../data/geo.ts';
+import type { Game } from '../sim/game.ts';
+import { MODE, type Line, type Mode, type Stop } from '../sim/transit.ts';
+import type { MapRenderer } from '../render/mapRenderer.ts';
+import type { TransitRenderer } from '../render/transitRenderer.ts';
 import type { World } from '../render/world.ts';
-import { INK, ZONE_COLOR, ZONE_NAME } from '../render/palette.ts';
 
-export type Tool = 'pan' | 'zoneR' | 'zoneC' | 'zoneI' | 'dezone' | 'road' | 'bulldoze' | `service:${ServiceKind}`;
+export type Tool = 'pan' | 'stop:bus' | 'stop:metro' | 'line' | 'remove';
 
-export interface Hover { kind: 'lot' | 'road' | 'zone' | 'service' | 'none'; text: string; sub?: string }
+export interface Hover { text: string; sub?: string }
 
 export class Tools {
   tool: Tool = 'pan';
-  roadClass: RoadClass = 'residential';
+  /** Línea que se está trazando o ampliando. */
+  editing: Line | null = null;
+  /** Línea seleccionada en el panel. */
+  selected: Line | null = null;
   onToolChange: (t: Tool) => void = () => undefined;
-  onHover: (h: Hover) => void = () => undefined;
+  onHover: (h: Hover | null) => void = () => undefined;
   onHint: (text: string) => void = () => undefined;
+  onSelect: (line: Line | null, stop: Stop | null) => void = () => undefined;
   private preview = new Graphics();
   private pointers = new Map<number, Pt>();
-  private dragStart: Pt | null = null;
-  private dragging = false;
-  private panStart: { x: number; y: number; rx: number; ry: number } | null = null;
-  private roadStart: Pt | null = null;
+  private panStart: { x: number; y: number; rx: number; ry: number; moved: boolean } | null = null;
   private lastPinch = 0;
-  private lastWorld: Pt = { x: 0, y: 0 };
+  private hoverStop: Stop | undefined;
+  private cursor: Pt = { x: 0, y: 0 };
 
-  constructor(private world: World, private city: City, private renderer: CityRenderer) {
+  constructor(private world: World, private game: Game, private map: MapRenderer, private transit: TransitRenderer) {
     world.overlay.addChild(this.preview);
     const c = world.app.canvas;
     c.addEventListener('pointerdown', e => this.down(e));
@@ -40,78 +41,133 @@ export class Tools {
   }
 
   setTool(t: Tool): void {
+    if (this.tool === 'line' && t !== 'line') this.finishLine();
     this.tool = t;
-    this.roadStart = null;
     this.preview.clear();
-    this.world.overlay.removeChildren();
-    this.world.overlay.addChild(this.preview);
     this.onToolChange(t);
     this.onHint(this.hintFor(t));
-    const c = this.world.app.canvas;
-    c.style.cursor = t === 'pan' ? 'grab' : 'crosshair';
+    this.world.app.canvas.style.cursor = t === 'pan' ? 'grab' : 'crosshair';
   }
 
   hintFor(t: Tool): string {
     switch (t) {
-      case 'pan': return 'Arrastra para moverte · rueda para ampliar · pasa el ratón por encima para ver detalles';
-      case 'zoneR': case 'zoneC': case 'zoneI': return 'Arrastra sobre terreno libre junto a una calle, o sobre edificios para recalificarlos · botón derecho para moverte';
-      case 'dezone': return 'Arrastra para quitar la zona';
-      case 'road': return `Clic para empezar la calle (${this.roadClass === 'residential' ? 'calle' : this.roadClass === 'secondary' ? 'avenida' : 'vía principal'}), clic para terminar · Esc cancela`;
-      case 'bulldoze': return 'Clic sobre un edificio, servicio o tramo de calle para demolerlo, o arrastra para despejar una zona (200 € cada uno)';
-      default: {
-        const kind = t.slice(8) as ServiceKind;
-        const d = SERVICE_DEF[kind];
-        return `${d.name}: ${d.cost.toLocaleString('es-ES')} € · cobertura ${d.radius} m · ${d.upkeep.toLocaleString('es-ES')} €/mes · clic para colocar`;
+      case 'pan': return 'Arrastra para moverte · rueda para ampliar · clic en una línea o parada para ver sus detalles';
+      case 'stop:bus': return `Clic junto a una calle para poner una parada de bus (${MODE.bus.stopCost} €) · los vecinos caminan hasta ${MODE.bus.walk} m`;
+      case 'stop:metro': return `Clic para poner una estación de metro (${MODE.metro.stopCost.toLocaleString('es-ES')} €) · atrae viajeros a ${MODE.metro.walk} m`;
+      case 'line': {
+        const l = this.editing;
+        if (!l) return '';
+        const n = l.stops.length;
+        if (n === 0) return `${l.name}: haz clic en la primera ${MODE[l.mode].stopName.toLowerCase()}`;
+        const extra = l.mode === 'metro' ? ` · túnel ${MODE.metro.trackCost} €/m` : '';
+        return `${l.name}: ${n} parada${n === 1 ? '' : 's'} · clic en la siguiente${n >= 3 ? ', en la primera para cerrar el bucle' : ''} · Enter o Esc para terminar${extra}`;
       }
+      case 'remove': return 'Clic sobre una parada para quitarla (se devuelve la mitad del coste)';
     }
   }
 
-  private zoneOf(t: Tool): Zone {
-    return t === 'zoneR' ? Zone.R : t === 'zoneC' ? Zone.C : t === 'zoneI' ? Zone.I : Zone.None;
+  /** Empieza a trazar una línea nueva. */
+  startLine(mode: Mode): void {
+    if (this.tool === 'line') this.finishLine();
+    this.editing = this.game.createLine(mode);
+    this.selected = this.editing;
+    this.transit.highlight = this.editing;
+    this.transit.drawNetwork();
+    this.tool = 'line';
+    this.onToolChange('line');
+    this.onHint(this.hintFor('line'));
+    this.onSelect(this.editing, null);
+    this.world.app.canvas.style.cursor = 'crosshair';
+  }
+
+  /** Sigue añadiendo paradas al final de una línea existente. */
+  extendLine(line: Line): void {
+    if (line.loop) return;
+    if (this.tool === 'line') this.finishLine();
+    this.editing = line;
+    this.selected = line;
+    this.transit.highlight = line;
+    this.transit.drawNetwork();
+    this.tool = 'line';
+    this.onToolChange('line');
+    this.onHint(this.hintFor('line'));
+    this.world.app.canvas.style.cursor = 'crosshair';
+  }
+
+  finishLine(): void {
+    const l = this.editing;
+    this.editing = null;
+    this.preview.clear();
+    if (!l) return;
+    if (l.stops.length < 2) { this.game.removeLine(l); this.selected = null; this.transit.highlight = null; this.onSelect(null, null); }
+    else {
+      if (!l.vehicles.length) this.game.addVehicle(l);
+      this.transit.highlight = l;
+      this.onSelect(l, null);
+    }
+    this.transit.drawNetwork();
+  }
+
+  select(line: Line | null, stop: Stop | null = null): void {
+    this.selected = line;
+    this.transit.highlight = line;
+    this.transit.drawNetwork();
+    this.onSelect(line, stop);
+  }
+
+  private lineAt(x: number, y: number, maxDist = 7): Line | null {
+    let best: Line | null = null, bd = maxDist * Math.max(1, 1.5 / this.world.zoom);
+    for (const line of this.game.net.lines.values()) {
+      for (const seg of [...line.fwd, ...line.back]) {
+        for (let i = 0; i + 1 < seg.pts.length; i++) {
+          const a = seg.pts[i], b = seg.pts[i + 1];
+          const d = pointSegment(x, y, a.x, a.y, b.x, b.y).d;
+          if (d < bd) { bd = d; best = line; }
+        }
+      }
+    }
+    return best;
   }
 
   private down(e: PointerEvent): void {
     const c = this.world.app.canvas;
     c.setPointerCapture(e.pointerId);
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (this.pointers.size === 2) { this.lastPinch = this.pinchDist(); this.dragStart = null; return; }
-    const w = this.world.toWorld(e.clientX, e.clientY);
+    if (this.pointers.size === 2) { this.lastPinch = this.pinchDist(); return; }
     const pan = this.tool === 'pan' || e.button === 1 || e.button === 2;
     if (pan) {
-      this.panStart = { x: e.clientX, y: e.clientY, rx: this.world.root.x, ry: this.world.root.y };
+      this.panStart = { x: e.clientX, y: e.clientY, rx: this.world.root.x, ry: this.world.root.y, moved: false };
       c.style.cursor = 'grabbing';
       return;
     }
     if (e.button !== 0) return;
+    const w = this.world.toWorld(e.clientX, e.clientY);
     switch (this.tool) {
-      case 'zoneR': case 'zoneC': case 'zoneI': case 'dezone': case 'bulldoze':
-        this.dragStart = w; this.dragging = true; break;
-      case 'road':
-        if (!this.roadStart) { this.roadStart = this.snap(w); }
-        else {
-          const end = this.snap(w);
-          if (this.city.buildRoad(this.roadStart, end, this.roadClass)) this.roadStart = end; // encadena tramos
-          this.preview.clear();
-        }
+      case 'stop:bus': case 'stop:metro': {
+        const mode = this.tool.slice(5) as Mode;
+        const s = this.game.addStop(mode, w.x, w.y);
+        if (s) { this.transit.drawNetwork(); this.onHint(`${s.name} · ${this.hintFor(this.tool)}`); }
         break;
-      default:
-        if (this.tool.startsWith('service:')) this.city.placeService(this.tool.slice(8) as ServiceKind, w.x, w.y);
+      }
+      case 'line': {
+        const l = this.editing;
+        if (!l) break;
+        const s = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
+        if (!s) { this.onHint('Haz clic sobre una parada. Si no hay, pon una primero (B o M).'); break; }
+        const r = this.game.appendStop(l, s.id);
+        if (r === 'closed') { this.finishLine(); this.setTool('pan'); }
+        else if (r === 'added') { this.transit.drawNetwork(); this.onHint(this.hintFor('line')); this.onSelect(l, null); }
+        break;
+      }
+      case 'remove': {
+        const s = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
+        if (s) { this.game.removeStop(s.id); this.transit.drawNetwork(); if (this.selected && !this.game.net.lines.has(this.selected.id)) this.select(null); else this.onSelect(this.selected, null); }
+        break;
+      }
     }
   }
 
-  private snap(p: Pt): Pt {
-    const g = this.city.graph;
-    const n = g.nearestNode(p.x, p.y, 9);
-    if (n >= 0) return { x: g.nodes[n].x, y: g.nodes[n].y };
-    const e = g.nearestEdge(p.x, p.y, 7);
-    if (e) { const ed = g.edges[e.edge]; const a = g.nodes[ed.a], b = g.nodes[ed.b]; return { x: a.x + (b.x - a.x) * e.t, y: a.y + (b.y - a.y) * e.t }; }
-    return p;
-  }
-
-  private pinchDist(): number {
-    const [a, b] = [...this.pointers.values()];
-    return Math.hypot(a.x - b.x, a.y - b.y);
-  }
+  private pinchDist(): number { const [a, b] = [...this.pointers.values()]; return Math.hypot(a.x - b.x, a.y - b.y); }
 
   private move(e: PointerEvent): void {
     if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -123,143 +179,75 @@ export class Tools {
       return;
     }
     if (this.panStart) {
-      this.world.root.x = this.panStart.rx + (e.clientX - this.panStart.x);
-      this.world.root.y = this.panStart.ry + (e.clientY - this.panStart.y);
+      const dx = e.clientX - this.panStart.x, dy = e.clientY - this.panStart.y;
+      if (Math.abs(dx) + Math.abs(dy) > 4) this.panStart.moved = true;
+      this.world.root.x = this.panStart.rx + dx;
+      this.world.root.y = this.panStart.ry + dy;
       return;
     }
     const w = this.world.toWorld(e.clientX, e.clientY);
-    this.lastWorld = w;
+    this.cursor = w;
+    this.hoverStop = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
     this.drawPreview(w);
-    if (!this.dragging) this.onHover(this.describe(w));
+    this.onHover(this.describe(w));
   }
 
   private up(e: PointerEvent): void {
     this.pointers.delete(e.pointerId);
-    if (this.panStart) { this.panStart = null; this.world.app.canvas.style.cursor = this.tool === 'pan' ? 'grab' : 'crosshair'; this.world.clamp(this.city.data.radius); return; }
-    if (this.dragging && this.dragStart) {
-      const w = this.world.toWorld(e.clientX, e.clientY);
-      const s = this.dragStart;
-      this.dragStart = null; this.dragging = false;
-      this.preview.clear();
-      if (this.tool === 'bulldoze') {
-        const moved = Math.hypot(w.x - s.x, w.y - s.y) > CELL;
-        if (moved) this.city.demolishCells(this.cellsInRect(s, w)); else this.city.demolishAt(w.x, w.y);
-        return;
+    if (this.panStart) {
+      const moved = this.panStart.moved;
+      this.panStart = null;
+      this.world.app.canvas.style.cursor = this.tool === 'pan' ? 'grab' : 'crosshair';
+      this.world.clamp(this.game.data.radius);
+      if (!moved && this.tool === 'pan' && e.button === 0) {
+        // clic simple: selecciona parada o línea
+        const w = this.world.toWorld(e.clientX, e.clientY);
+        const s = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
+        if (s) { this.select(s.lines.length ? this.game.net.lines.get(s.lines[0]) ?? null : null, s); return; }
+        const l = this.lineAt(w.x, w.y);
+        this.select(l);
       }
-      const cells = this.cellsInRect(s, w);
-      const z = this.zoneOf(this.tool);
-      const n = this.city.zoneCells(cells, z);
-      if (n && z !== Zone.None) this.onHint(`${n} celdas zonificadas · se construirá cuando haya demanda, luz y agua`);
     }
-  }
-
-  private cellsInRect(a: Pt, b: Pt): number[] {
-    const g = this.city.grid;
-    const [c0, r0] = g.cellOf(Math.min(a.x, b.x), Math.min(a.y, b.y));
-    const [c1, r1] = g.cellOf(Math.max(a.x, b.x), Math.max(a.y, b.y));
-    const out: number[] = [];
-    for (let cy = Math.max(0, r0); cy <= Math.min(g.h - 1, r1); cy++) for (let cx = Math.max(0, c0); cx <= Math.min(g.w - 1, c1); cx++) out.push(g.idx(cx, cy));
-    return out;
   }
 
   private drawPreview(w: Pt): void {
     const p = this.preview;
-    p.clear();
-    const g = this.city.grid;
     switch (this.tool) {
-      case 'zoneR': case 'zoneC': case 'zoneI': case 'dezone': {
-        const z = this.zoneOf(this.tool);
-        const color = z ? ZONE_COLOR[z] : 0xd23b33;
-        const a = this.dragging && this.dragStart ? this.dragStart : w;
-        const cells = this.cellsInRect(a, w);
-        for (const i of cells) {
-          if (!this.city.canZone(i, z)) continue;
-          p.rect(g.x0 + (i % g.w) * CELL + 1, g.y0 + ((i / g.w) | 0) * CELL + 1, CELL - 2, CELL - 2);
-        }
-        p.fill({ color, alpha: 0.5 });
-        const [c0, r0] = g.cellOf(Math.min(a.x, w.x), Math.min(a.y, w.y));
-        const [c1, r1] = g.cellOf(Math.max(a.x, w.x), Math.max(a.y, w.y));
-        p.rect(g.x0 + c0 * CELL, g.y0 + r0 * CELL, (c1 - c0 + 1) * CELL, (r1 - r0 + 1) * CELL).stroke({ color: INK, width: 1, alpha: 0.6 });
+      case 'stop:bus': case 'stop:metro': {
+        const mode = this.tool.slice(5) as Mode;
+        const pl = this.game.net.placement(mode, w.x, w.y);
+        this.transit.previewStop(p, mode, pl.x, pl.y, pl.ok);
+        if (!pl.ok && pl.reason) this.onHint(pl.reason); else this.onHint(this.hintFor(this.tool));
         break;
       }
-      case 'road': {
-        const s = this.snap(w);
-        p.circle(s.x, s.y, 3).fill({ color: 0xffffff, alpha: 0.8 }).stroke({ color: INK, width: 0.8 });
-        if (this.roadStart) {
-          const blocked = this.city.roadBlocked(this.roadStart, s, this.roadClass);
-          const cost = this.city.roadCost(this.roadStart, s, this.roadClass);
-          p.moveTo(this.roadStart.x, this.roadStart.y).lineTo(s.x, s.y).stroke({ color: blocked ? 0xd23b33 : 0x4b4b4e, width: ROAD_WIDTH[this.roadClass], alpha: 0.6, cap: 'round' });
-          this.onHint(blocked ?? `${Math.round(Math.hypot(s.x - this.roadStart.x, s.y - this.roadStart.y))} m · ${Math.round(cost).toLocaleString('es-ES')} € · clic para construir, Esc para cancelar`);
-        }
+      case 'line':
+        if (this.editing) this.transit.previewLineExtension(p, this.editing, w, this.hoverStop);
         break;
-      }
-      case 'bulldoze': {
-        if (this.dragging && this.dragStart) {
-          const a = this.dragStart;
-          const [c0, r0] = g.cellOf(Math.min(a.x, w.x), Math.min(a.y, w.y));
-          const [c1, r1] = g.cellOf(Math.max(a.x, w.x), Math.max(a.y, w.y));
-          p.rect(g.x0 + c0 * CELL, g.y0 + r0 * CELL, (c1 - c0 + 1) * CELL, (r1 - r0 + 1) * CELL).fill({ color: 0xd23b33, alpha: 0.25 }).stroke({ color: 0xd23b33, width: 1 });
-          break;
-        }
-        const lot = this.city.lotAt(w.x, w.y);
-        if (lot) { p.poly(lot.poly.flatMap(q => [q.x, q.y]), true).fill({ color: 0xd23b33, alpha: 0.35 }); break; }
-        const hit = this.city.graph.nearestEdge(w.x, w.y, 7);
-        if (hit) { const e = this.city.graph.edges[hit.edge]; const a = this.city.graph.nodes[e.a], b = this.city.graph.nodes[e.b]; p.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ color: 0xd23b33, width: ROAD_WIDTH[e.cls] + 2, alpha: 0.5, cap: 'round' }); }
+      case 'remove':
+        p.clear();
+        if (this.hoverStop) p.circle(this.hoverStop.x, this.hoverStop.y, 12).stroke({ color: 0xd23b33, width: 2.5 });
         break;
-      }
       default:
-        if (this.tool.startsWith('service:')) {
-          const kind = this.tool.slice(8) as ServiceKind;
-          const pl = this.city.servicePlacement(kind, w.x, w.y);
-          this.renderer.previewService(this.world.overlay, kind, w.x, w.y, pl.angle, pl.ok);
-          this.world.overlay.addChild(this.preview);
-        }
+        p.clear();
     }
   }
 
   cancel(): void {
-    if (this.roadStart) { this.roadStart = null; this.preview.clear(); this.onHint(this.hintFor('road')); return; }
-    this.setTool('pan');
+    if (this.tool === 'line') { this.finishLine(); this.setTool('pan'); return; }
+    if (this.tool !== 'pan') { this.setTool('pan'); return; }
+    if (this.selected) { this.select(null); }
   }
 
-  /** Describe lo que hay bajo el puntero. */
-  describe(w: Pt): Hover {
-    const lot = this.city.lotAt(w.x, w.y);
-    if (lot) {
-      const useName = { residential: 'Residencial', commercial: 'Comercial', industrial: 'Industrial', public: 'Equipamiento' }[lot.use];
-      const n = Math.round(lot.cap * lot.occ);
-      const what = lot.use === 'residential' ? `${n} habitantes` : `${n} empleos`;
-      const svc = lot.service ? ` · ${SERVICE_DEF[lot.service].name}` : '';
-      const pz = this.city.pendingZone(lot);
-      const pend = pz ? ` · se renovará como ${ZONE_NAME[pz].toLowerCase()}` : '';
-      return { kind: 'lot', text: lot.name ?? useName, sub: `${lot.name ? useName + ' · ' : ''}${lot.levels} plantas · ${what}${svc}${lot.origin === 'built' ? ' · nuevo' : ''}${pend}` };
+  describe(w: Pt): Hover | null {
+    const s = this.hoverStop;
+    if (s) {
+      const lines = s.lines.map(id => this.game.net.lines.get(id)?.name).filter(Boolean).join(', ');
+      return { text: s.name, sub: `${MODE[s.mode].stopName} · ${s.queue.length} esperando${lines ? ' · ' + lines : ' · sin línea'}` };
     }
-    const s = this.city.serviceAt(w.x, w.y);
-    if (s) return { kind: 'service', text: SERVICE_DEF[s.kind].name, sub: `Cobertura ${SERVICE_DEF[s.kind].radius} m` };
-    const hit = this.city.graph.nearestEdge(w.x, w.y, 8);
-    if (hit) {
-      const e = this.city.graph.edges[hit.edge];
-      const cls = { motorway: 'Autovía', primary: 'Vía principal', secondary: 'Avenida', tertiary: 'Calle principal', residential: 'Calle', service: 'Vía de servicio', pedestrian: 'Peatonal' }[e.cls];
-      const load = e.load ? ` · ${e.load} coches` : '';
-      return { kind: 'road', text: e.name ?? cls, sub: `${e.name ? cls + ' · ' : ''}${e.oneway ? 'sentido único' : 'doble sentido'}${load}` };
-    }
-    const [cx, cy] = this.city.grid.cellOf(w.x, w.y);
-    if (this.city.grid.inBounds(cx, cy)) {
-      const i = this.city.grid.idx(cx, cy);
-      const g = this.city.grid;
-      if (g.zone[i]) {
-        const name = { 1: 'Zona residencial', 2: 'Zona comercial', 3: 'Zona industrial' }[g.zone[i]]!;
-        const needs: string[] = [];
-        if (!g.coverage.power[i]) needs.push('luz');
-        if (!g.coverage.water[i]) needs.push('agua');
-        if (g.roadDist[i] > 2) needs.push('calle cerca');
-        return { kind: 'zone', text: name, sub: needs.length ? `Falta: ${needs.join(', ')}` : 'Lista para construir' };
-      }
-      if (g.kind[i] === Kind.Water) return { kind: 'none', text: 'Agua' };
-      if (g.kind[i] === Kind.Park) return { kind: 'none', text: 'Plaza o zona verde' };
-    }
-    return { kind: 'none', text: '' };
+    const l = this.tool === 'pan' ? this.lineAt(w.x, w.y) : null;
+    if (l) return { text: l.name, sub: `${MODE[l.mode].name} · ${l.stops.length} paradas · ${l.vehicles.length} vehículos · ${l.vehicles.reduce((a, v) => a + v.passengers.length, 0)} a bordo` };
+    return this.map.describe(w.x, w.y);
   }
 
-  get pointerWorld(): Pt { return this.lastWorld; }
+  get pointerWorld(): Pt { return this.cursor; }
 }

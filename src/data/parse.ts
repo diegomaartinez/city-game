@@ -132,7 +132,11 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
         let nodes = el.nodes ? el.nodes.slice() : pts.map((_, i) => -(el.id * 1000 + i));
         let oneway = t.oneway === 'yes' || t.oneway === 'true' || t.oneway === '1' || t.junction === 'roundabout';
         if (t.oneway === '-1') { pts.reverse(); nodes = nodes.reverse(); oneway = true; }
-        roads.push({ id: el.id, cls: ROAD_CLASS[t.highway], name: t.name, oneway, pts, nodes });
+        let layer = parseInt(t.layer ?? '', 10);
+        if (!Number.isFinite(layer)) layer = t.tunnel && t.tunnel !== 'no' ? -1 : t.bridge && t.bridge !== 'no' ? 1 : 0;
+        if (layer === 0 && t.tunnel && t.tunnel !== 'no') layer = -1;
+        if (layer === 0 && t.bridge && t.bridge !== 'no') layer = 1;
+        roads.push({ id: el.id, cls: ROAD_CLASS[t.highway], name: t.name, oneway, pts, nodes, layer });
         continue;
       }
       if (!isClosed(g)) continue;
@@ -184,7 +188,7 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
       for (const sa of serviceAreas) if (pointInPoly(ctr.x, ctr.y, sa.poly)) { service = sa.kind; break; }
     }
     if (service) services++;
-    buildings.push({ id: c.id, use: service ? 'public' : inf.use, poly: c.poly, levels, area, cx: ctr.x, cy: ctr.y, origin: 'osm', service, name: c.tags.name });
+    buildings.push({ id: c.id, use: service ? 'public' : inf.use, poly: c.poly, levels, area, cx: ctr.x, cy: ctr.y, service, name: c.tags.name });
   }
 
   const city: CityData = { name, lat, lon, radius, roads, buildings, areas, fetchedAt: Date.now() };

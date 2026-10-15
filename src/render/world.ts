@@ -9,13 +9,14 @@ export class World {
   readonly root = new Container();
   readonly ground = new Graphics();
   readonly areas = new Container();
-  readonly zones = new Container();
   readonly roads = new Container();
-  readonly traffic = new Container();
   readonly shadows = new Container();
   readonly buildings = new Container();
-  readonly services = new Container();
-  readonly cars = new Container();
+  readonly heat = new Container();
+  readonly lines = new Container();
+  readonly stops = new Container();
+  readonly vehicles = new Container();
+  readonly markers = new Container();
   readonly overlay = new Container();
   zoom = 0.4;
   minZoom = 0.06;
@@ -25,7 +26,7 @@ export class World {
     await this.app.init({ background: SAND, resizeTo: window, antialias: true, resolution: Math.min(2, window.devicePixelRatio || 1), autoDensity: true, preference: 'webgl' });
     parent.appendChild(this.app.canvas);
     this.app.canvas.id = 'world';
-    this.root.addChild(this.ground, this.areas, this.zones, this.roads, this.shadows, this.traffic, this.buildings, this.services, this.cars, this.overlay);
+    this.root.addChild(this.ground, this.areas, this.roads, this.shadows, this.buildings, this.heat, this.lines, this.stops, this.vehicles, this.markers, this.overlay);
     this.app.stage.addChild(this.root);
     this.app.canvas.style.touchAction = 'none';
   }
