@@ -1,0 +1,16 @@
+[
+  {
+    "id": "coruna",
+    "name": "A Coruña",
+    "subtitle": "La ciudad y su área metropolitana: Oleiros, Culleredo, Cambre, Arteixo y Sada.",
+    "radius": 10500,
+    "population": 964015,
+    "jobs": 225063,
+    "buildings": 38715,
+    "districts": 42,
+    "file": "coruna.json.gz",
+    "bytes": 11422737,
+    "version": 4,
+    "builtAt": "2026-10-16T17:26:40.783Z"
+  }
+]
