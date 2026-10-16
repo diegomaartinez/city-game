@@ -19,8 +19,6 @@ export class TransitRenderer {
   private stopsG = new Graphics();
   private queuesG = new Graphics();
   private markersG = new Graphics();
-  private waitingG = new Graphics();
-  private waitingLabels = new Map<number, Text>();
   private flowLabels = new Map<number, Text>();
   private flowsG = new Graphics();
   private hexG = new Graphics();
@@ -36,8 +34,6 @@ export class TransitRenderer {
   highlight: Line | null = null;
   overlay: Overlay = 'none';
   private overlayTimer = 9;
-  private waitingTimer = 9;
-  private waitingZoom = 1;
   private drawnOverlay: Overlay = 'none';
   private drawnZoom = -1;
   private ink = INK;
@@ -50,7 +46,7 @@ export class TransitRenderer {
   constructor(private world: World, private game: Game) {
     world.lines.addChild(this.linesG);
     world.stops.addChild(this.stopsG, this.queuesG, this.labelLayer);
-    world.markers.addChild(this.markersG, this.waitingG);
+    world.markers.addChild(this.markersG);
     world.heat.addChild(this.hexLayer, this.flowsG);
     this.hexLayer.addChild(this.hexG);
     this.busTex = this.makeVehicleTexture(11, 3.2, false);
@@ -167,8 +163,6 @@ export class TransitRenderer {
     this.drawQueues();
     this.updateVehicles();
     this.drawMarkers(now);
-    this.waitingTimer += dt;
-    if (this.waitingTimer > 0.25 || Math.abs(z - this.waitingZoom) / this.waitingZoom > 0.05) { this.waitingTimer = 0; this.waitingZoom = z; this.drawWaiting(); }
     this.overlayTimer += dt;
     if (this.overlay !== this.drawnOverlay) { this.overlayTimer = 9; this.drawnOverlay = this.overlay; this.flowsG.clear(); this.hexG.clear(); for (const l of this.hexLabels.values()) l.visible = false; for (const l of this.flowLabels.values()) l.visible = false; }
     if (this.overlayTimer > 1) {
@@ -181,34 +175,6 @@ export class TransitRenderer {
       const show = this.game.demand.hexR * z * 1.7 > 34;
       for (const l of this.hexLabels.values()) { if (l.visible) l.scale.set(sc); l.renderable = show; }
     }
-  }
-
-  // ───────────── barrios: vecinos esperando sin parada ─────────────
-  private drawWaiting(): void {
-    const g = this.waitingG;
-    g.clear();
-    const zoom = this.world.zoom;
-    const k = Math.max(1, 2.4 / zoom);
-    const seen = new Set<number>();
-    for (const d of this.game.demand.districts.list) {
-      if (d.waiting < 2) continue;
-      seen.add(d.id);
-      // un solo indicador por barrio: disco coral que crece con la gente que espera, con una silueta dentro
-      const r = (6 + Math.min(8, Math.sqrt(d.waiting) * 1.4)) * k;
-      const cx = d.x, cy = d.y + (8 + r / k) * k;
-      g.circle(cx, cy, r + 1.5 * k).fill({ color: 0xffffff, alpha: 0.7 });
-      g.circle(cx, cy, r).fill(0xe88a82);
-      g.circle(cx, cy - r * 0.3, r * 0.22).fill(0xffffff);
-      g.roundRect(cx - r * 0.3, cy - r * 0.02, r * 0.6, r * 0.62, r * 0.2).fill(0xffffff);
-      let label = this.waitingLabels.get(d.id);
-      if (!label) { label = new Text({ text: '', style: { ...LABEL_STYLE, fontSize: 10, fill: 0xd23b33 } }); label.anchor.set(0.5, 0); this.world.markers.addChild(label); this.waitingLabels.set(d.id, label); }
-      const txt = `${(Math.round(d.waiting) * PEOPLE_PER_PASSENGER).toLocaleString('es-ES')} esperan`;
-      if (label.text !== txt) label.text = txt;
-      label.position.set(cx, cy + r + 1.5 * k);
-      label.scale.set(Math.max(0.5, 1 / zoom));
-      label.visible = true;
-    }
-    for (const [id, l] of this.waitingLabels) if (!seen.has(id)) l.visible = false;
   }
 
   // ───────────── capa: flujos entre barrios ─────────────
