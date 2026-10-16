@@ -47,14 +47,15 @@ export class Demand {
     let pop = 0, jobs = 0;
     const hw: number[] = [], jw: number[] = [];
     const points: WeightedPoint[] = [];
+    const k = data.peopleScale ?? 1;
     for (const b of data.buildings) {
       const floor = b.area * b.levels;
       const src: Source = { x: b.cx, y: b.cy, id: b.id, district: 0 };
-      if (b.use === 'residential') { const w = Math.max(2, floor / 35); this.homes.push(src); hw.push(w); pop += w; points.push({ x: b.cx, y: b.cy, w, kind: 'home' }); }
-      else { const w = Math.max(2, floor / (b.use === 'industrial' ? 60 : b.use === 'public' ? 50 : 25)); this.jobs.push(src); jw.push(w); jobs += w; points.push({ x: b.cx, y: b.cy, w, kind: 'job' }); }
+      if (b.use === 'residential') { const w = Math.max(1, floor / 35) * k; this.homes.push(src); hw.push(w); pop += w; points.push({ x: b.cx, y: b.cy, w, kind: 'home' }); }
+      else { const w = Math.max(1, floor / (b.use === 'industrial' ? 60 : b.use === 'public' ? 50 : 25)) * k; this.jobs.push(src); jw.push(w); jobs += w; points.push({ x: b.cx, y: b.cy, w, kind: 'job' }); }
     }
     for (const z of data.zones ?? []) {
-      const w = z.area * ZONE_DENSITY[z.kind];
+      const w = z.area * ZONE_DENSITY[z.kind] * k;
       if (w < 5) continue;
       const samples = zoneSamples(z);
       const src: Source = { x: z.cx, y: z.cy, id: -z.id, poly: z.poly, samples, district: 0 };

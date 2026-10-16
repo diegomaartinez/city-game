@@ -6,6 +6,7 @@
     "lat": 43.335,
     "lon": -8.39,
     "radius": 10500,
+    "population": 400000,
     "core": { "south": 43.28, "west": -8.53, "north": 43.40, "east": -8.30 }
   }
 ]

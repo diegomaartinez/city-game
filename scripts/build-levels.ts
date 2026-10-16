@@ -8,10 +8,11 @@ import { buildQuery, buildRingQuery, bboxFilter, bboxOf, fetchOsm, type OsmRespo
 import { parseOsm } from '../src/data/parse.ts';
 import { Projection } from '../src/data/geo.ts';
 import { CITY_VERSION } from '../src/data/types.ts';
+import { compact } from '../src/data/compact.ts';
 import { Game } from '../src/sim/game.ts';
 
-interface LevelDef { id: string; name: string; subtitle: string; lat: number; lon: number; radius: number; core: { south: number; west: number; north: number; east: number } }
-interface LevelInfo { id: string; name: string; subtitle: string; radius: number; population: number; jobs: number; buildings: number; districts: number; file: string; bytes: number; version: number; builtAt: string }
+interface LevelDef { id: string; name: string; subtitle: string; lat: number; lon: number; radius: number; /** Población real del área (para calibrar la estimación). */ population?: number; core: { south: number; west: number; north: number; east: number } }
+interface LevelInfo { id: string; name: string; subtitle: string; radius: number; population: number; jobs: number; buildings: number; districts: number; file: string; bytes: number; version: number; builtAt: string; /** Definición con la que se construyó: si cambia en levels.json, se reconstruye. */ def: string }
 
 const root = path.resolve(new URL('..', import.meta.url).pathname);
 const outDir = path.join(root, 'public', 'levels');
@@ -26,7 +27,8 @@ const index: LevelInfo[] = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync
 for (const def of defs) {
   if (only.length && !only.includes(def.id)) continue;
   const existing = index.find(l => l.id === def.id);
-  if (existing && !force && existing.version === CITY_VERSION && fs.existsSync(path.join(outDir, existing.file))) { console.log(`${def.id}: ya construido`); continue; }
+  const defStr = JSON.stringify(def);
+  if (existing && !force && existing.version === CITY_VERSION && existing.def === defStr && fs.existsSync(path.join(outDir, existing.file))) { console.log(`${def.id}: ya construido`); continue; }
   console.log(`${def.id}: descargando núcleo…`);
   const progress = (p: { phase: string; bytes: number; server: string }) => { if (p.phase === 'downloading' && p.bytes % 5_000_000 < 200_000) console.log(`  ${p.server} ${(p.bytes / 1e6).toFixed(1)} MB`); };
   const c = def.core;
@@ -44,12 +46,19 @@ for (const def of defs) {
   const coreBox: [number, number, number, number] = [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)];
   const { city, stats } = parseOsm(main, def.name, def.lat, def.lon, def.radius, coreBox);
   console.log(`  ${stats.roads} calles, ${stats.buildings} edificios, ${stats.areas} áreas, ${city.zones.length} zonas, ${city.places?.length ?? 0} barrios`);
+  compact(city);
+  // calibración: la estimación por superficie suele pasarse; se ajusta a la población real si se conoce
+  if (def.population) {
+    const est = new Game(city, 'creativo').demand.population;
+    city.peopleScale = Math.round((def.population / est) * 1000) / 1000;
+    console.log(`  población estimada ${est.toLocaleString('es-ES')} → real ${def.population.toLocaleString('es-ES')} (factor ${city.peopleScale})`);
+  }
   const game = new Game(city, 'creativo');
   const json = JSON.stringify(city);
   const gz = zlib.gzipSync(Buffer.from(json), { level: 9 });
   const file = `${def.id}.json.gz`;
   fs.writeFileSync(path.join(outDir, file), gz);
-  const info: LevelInfo = { id: def.id, name: def.name, subtitle: def.subtitle, radius: def.radius, population: game.demand.population, jobs: game.demand.jobCount, buildings: stats.buildings, districts: game.demand.districts.k, file, bytes: gz.length, version: CITY_VERSION, builtAt: new Date().toISOString() };
+  const info: LevelInfo = { id: def.id, name: def.name, subtitle: def.subtitle, radius: def.radius, population: game.demand.population, jobs: game.demand.jobCount, buildings: stats.buildings, districts: game.demand.districts.k, file, bytes: gz.length, version: CITY_VERSION, builtAt: new Date().toISOString(), def: defStr };
   const i = index.findIndex(l => l.id === def.id);
   if (i >= 0) index[i] = info; else index.push(info);
   console.log(`  ${(json.length / 1e6).toFixed(1)} MB → ${(gz.length / 1e6).toFixed(2)} MB gz · ${info.population.toLocaleString('es-ES')} hab · ${info.districts} barrios`);

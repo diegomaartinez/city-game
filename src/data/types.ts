@@ -67,6 +67,8 @@ export interface CityData {
   zones: Zone[];
   /** Barrios con nombre (nodos place). */
   places?: PlaceNode[];
+  /** Factor que ajusta la población estimada a la real (niveles calibrados); 1 si no se conoce. */
+  peopleScale?: number;
   /** Momento de descarga (ms). */
   fetchedAt: number;
   /** Versión del formato; si cambia, la ciudad se vuelve a descargar. */
