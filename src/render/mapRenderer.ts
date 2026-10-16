@@ -1,43 +1,55 @@
-// Dibuja la ciudad real (zonas verdes, agua, calles con puentes y túneles, edificios). Es estática:
-// se construye una vez por teselas y solo se muestran las teselas que están en pantalla.
+// Dibuja la ciudad real (mar, zonas verdes, agua, calles con puentes y túneles, edificios) en el estilo
+// elegido. Es estática: se construye una vez por teselas y solo se muestran las teselas en pantalla.
 import { Graphics } from 'pixi.js';
 import type { Area, Building, CityData, Pt, ServiceKind } from '../data/types.ts';
 import { pointInPoly } from '../data/geo.ts';
 import { DRIVABLE, ROAD_WIDTH, type RoadGraph } from '../sim/graph.ts';
 import type { World } from './world.ts';
-import { CEMETERY, CREAM, GRASS, INK, PARK, PARK_DARK, ROAD_FILL, SHADOW, SHADOW_ALPHA, SHADOW_DIR, WATER, WATER_EDGE, WOOD, buildingColor } from './palette.ts';
+import { STYLES, type MapStyle, type StyleDef } from './palette.ts';
 
 const TILE = 256;
 const flat = (poly: Pt[]) => { const a = new Array<number>(poly.length * 2); for (let i = 0; i < poly.length; i++) { a[i * 2] = poly[i].x; a[i * 2 + 1] = poly[i].y; } return a; };
 
-interface Tile { x0: number; y0: number; shadow: Graphics; body: Graphics }
+interface Tile { x0: number; y0: number; body: Graphics }
 
 export class MapRenderer {
   private tiles: Tile[] = [];
+  style: MapStyle = 'maqueta';
 
   constructor(private world: World, private data: CityData, private graph: RoadGraph) {}
 
-  drawAll(): void {
-    this.world.drawGround(this.data.radius);
+  get def(): StyleDef { return STYLES[this.style]; }
+
+  drawAll(style: MapStyle = this.style): void {
+    this.style = style;
+    const d = this.def;
+    this.world.drawGround(this.data.radius, d.bg, d.bgPatches, d.backdrop);
     this.drawAreas(this.data.areas);
+    this.drawZones();
     this.drawRoads();
     this.drawBuildings(this.data.buildings);
   }
 
-  // ───────────── zonas verdes y agua ─────────────
+  // ───────────── mar, zonas verdes y agua ─────────────
   private drawAreas(areas: Area[]): void {
+    const d = this.def;
     const g = new Graphics();
     for (const a of areas) {
       const pts = flat(a.poly);
       switch (a.kind) {
-        case 'water': g.poly(pts, true).fill(WATER).stroke({ color: WATER_EDGE, width: 1.5, alpha: 0.8 }); break;
-        case 'park': g.poly(pts, true).fill(PARK).stroke({ color: PARK_DARK, width: 1.2, alpha: 0.9 }); break;
-        case 'wood': g.poly(pts, true).fill(WOOD).stroke({ color: PARK_DARK, width: 1.2, alpha: 0.9 }); break;
-        case 'grass': g.poly(pts, true).fill(GRASS).stroke({ color: PARK_DARK, width: 1, alpha: 0.6 }); break;
-        case 'cemetery': g.poly(pts, true).fill(CEMETERY).stroke({ color: PARK_DARK, width: 1, alpha: 0.6 }); break;
-        case 'plaza': g.poly(pts, true).fill(CREAM).stroke({ color: INK, width: 0.8, alpha: 0.5 }); break;
+        case 'sea': g.poly(pts, true).fill(d.sea).stroke({ color: d.seaEdge, width: 3, alpha: 0.7 }); break;
+        case 'land': g.poly(pts, true).fill(d.bg).stroke({ color: d.seaEdge, width: 2, alpha: 0.7 }); break;
+        case 'water': g.poly(pts, true).fill(d.water).stroke({ color: d.waterEdge, width: 1.5, alpha: 0.8 }); break;
+        case 'park': g.poly(pts, true).fill(d.park).stroke({ color: d.parkEdge, width: 1.2, alpha: 0.9 }); break;
+        case 'wood': g.poly(pts, true).fill(d.wood).stroke({ color: d.parkEdge, width: 1.2, alpha: 0.9 }); break;
+        case 'grass': g.poly(pts, true).fill(d.grass).stroke({ color: d.parkEdge, width: 1, alpha: 0.6 }); break;
+        case 'cemetery': g.poly(pts, true).fill(d.cemetery).stroke({ color: d.parkEdge, width: 1, alpha: 0.6 }); break;
+        case 'plaza': g.poly(pts, true).fill(d.plaza).stroke({ color: d.plazaEdge, width: 0.8, alpha: 0.5 }); break;
       }
     }
+    this.world.areas.removeChildren();
+    this.world.areas.addChild(g);
+    if (!d.trees) return;
     const trees = new Graphics();
     let seed = 11;
     const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
@@ -50,72 +62,82 @@ export class MapRenderer {
         const x = x0 + rnd() * (x1 - x0), y = y0 + rnd() * (y1 - y0);
         if (!pointInPoly(x, y, a.poly)) continue;
         const r = 2.5 + rnd() * 3;
-        trees.circle(x - r * 0.4, y + r * 0.5, r).fill({ color: SHADOW, alpha: 0.18 });
-        trees.circle(x, y, r).fill(rnd() < 0.5 ? 0x7fa85e : 0x6f9a52).stroke({ color: INK, width: 0.6, alpha: 0.7 });
+        trees.circle(x, y, r).fill(rnd() < 0.5 ? 0x7fa85e : 0x6f9a52).stroke({ color: d.ink, width: 0.6, alpha: 0.7 });
         trees.circle(x - r * 0.3, y - r * 0.3, r * 0.4).fill({ color: 0xa9c97e, alpha: 0.8 });
       }
     }
-    this.world.areas.removeChildren();
-    this.world.areas.addChild(g, trees);
+    this.world.areas.addChild(trees);
+  }
+
+  // ───────────── zonas de uso del suelo (área metropolitana) ─────────────
+  private drawZones(): void {
+    const d = this.def;
+    const g = new Graphics();
+    for (const z of this.data.zones ?? []) g.poly(flat(z.poly), true).fill(d.zone[z.kind]).stroke({ color: d.zoneEdge, width: 1.2, alpha: 0.8 });
+    this.world.areas.addChild(g);
   }
 
   // ───────────── calles ─────────────
   private drawRoads(): void {
     const { nodes, edges } = this.graph;
+    const rs = this.def.road;
     const order = ['pedestrian', 'service', 'residential', 'tertiary', 'secondary', 'primary', 'motorway'] as const;
     const layers = [...new Set(edges.filter(e => !e.removed).map(e => e.layer))].sort((a, b) => a - b);
     this.world.roads.removeChildren();
+    const width = (cls: (typeof order)[number]) => ROAD_WIDTH[cls] * rs.widthScale;
     for (const layer of layers) {
       const g = new Graphics();
       const byClass = new Map<string, number[]>();
       for (let i = 0; i < edges.length; i++) {
         const e = edges[i];
         if (e.removed || e.layer !== layer) continue;
+        if (e.cls === 'pedestrian' && !rs.showPedestrian) continue;
+        if (e.cls === 'service' && !rs.showService) continue;
         let l = byClass.get(e.cls); if (!l) byClass.set(e.cls, (l = [])); l.push(i);
       }
       const path = (list: number[]) => { for (const i of list) { const e = edges[i]; g.moveTo(nodes[e.a].x, nodes[e.a].y).lineTo(nodes[e.b].x, nodes[e.b].y); } };
       const tunnel = layer < 0, bridge = layer > 0;
-      // contorno de tinta
-      for (const cls of order) {
+      if (rs.casing !== null) for (const cls of order) {
         const list = byClass.get(cls); if (!list) continue;
-        const w = ROAD_WIDTH[cls];
+        const w = width(cls);
         path(list);
-        if (tunnel) g.stroke({ color: INK, width: w + 1.2, cap: 'butt', alpha: 0.35 });
-        else g.stroke({ color: INK, width: w + (DRIVABLE(cls) || cls === 'motorway' ? (bridge ? 4.6 : 3.2) : 1.4), cap: 'round', join: 'round', alpha: 0.9 });
+        if (tunnel) g.stroke({ color: rs.casing, width: w + 1.2, cap: 'butt', alpha: 0.35 });
+        else g.stroke({ color: rs.casing, width: w + (DRIVABLE(cls) || cls === 'motorway' ? (bridge ? 4.6 : rs.sidewalk !== null ? 3.2 : 1.6) : 1.4), cap: 'round', join: 'round', alpha: rs.casingAlpha });
       }
-      // acera
-      if (!tunnel) for (const cls of order) {
+      if (rs.sidewalk !== null && !tunnel) for (const cls of order) {
         if (cls === 'pedestrian') continue;
         const list = byClass.get(cls); if (!list) continue;
         path(list);
-        g.stroke({ color: bridge ? 0xd9d2c0 : CREAM, width: ROAD_WIDTH[cls] + 2.0, cap: 'round', join: 'round' });
+        g.stroke({ color: bridge ? 0xd9d2c0 : rs.sidewalk, width: width(cls) + 2.0, cap: 'round', join: 'round' });
       }
-      // asfalto
       for (const cls of order) {
         const list = byClass.get(cls); if (!list) continue;
         path(list);
-        g.stroke({ color: tunnel ? 0x9a948e : ROAD_FILL[cls], width: ROAD_WIDTH[cls], cap: tunnel ? 'butt' : 'round', join: 'round', alpha: tunnel ? 0.55 : 1 });
+        g.stroke({ color: tunnel ? 0x9a948e : rs.fill[cls], width: width(cls), cap: tunnel ? 'butt' : 'round', join: 'round', alpha: tunnel ? 0.55 : 1 });
       }
-      // línea central discontinua en vías principales (no en túneles)
-      if (!tunnel) {
-        const d = new Graphics();
+      if (rs.dashes && !tunnel) {
+        const dsh = new Graphics();
         for (const cls of ['primary', 'motorway', 'secondary'] as const) {
           const list = byClass.get(cls); if (!list) continue;
           for (const i of list) {
             const e = edges[i]; const a = nodes[e.a], b = nodes[e.b];
             if (e.len < 6) continue;
             const ux = (b.x - a.x) / e.len, uy = (b.y - a.y) / e.len;
-            for (let s = 2; s < e.len - 2; s += 9) { const t = Math.min(e.len - 2, s + 4.5); d.moveTo(a.x + ux * s, a.y + uy * s).lineTo(a.x + ux * t, a.y + uy * t); }
+            for (let s = 2; s < e.len - 2; s += 9) { const t = Math.min(e.len - 2, s + 4.5); dsh.moveTo(a.x + ux * s, a.y + uy * s).lineTo(a.x + ux * t, a.y + uy * t); }
           }
         }
-        d.stroke({ color: CREAM, width: 0.7, alpha: 0.85, cap: 'round' });
-        this.world.roads.addChild(g, d);
+        dsh.stroke({ color: rs.dashColor, width: 0.7, alpha: 0.85, cap: 'round' });
+        this.world.roads.addChild(g, dsh);
       } else this.world.roads.addChild(g);
     }
   }
 
   // ───────────── edificios por teselas ─────────────
   private drawBuildings(buildings: Building[]): void {
+    const d = this.def;
+    for (const t of this.tiles) t.body.destroy();
+    this.tiles = [];
+    this.world.buildings.removeChildren();
     const groups = new Map<string, Building[]>();
     for (const b of buildings) {
       const k = `${Math.floor(b.cx / TILE)},${Math.floor(b.cy / TILE)}`;
@@ -123,26 +145,19 @@ export class MapRenderer {
     }
     for (const [k, list] of groups) {
       const [tx, ty] = k.split(',').map(Number);
-      const shadow = new Graphics(), body = new Graphics();
+      const body = new Graphics();
       for (const b of list) {
-        const h = b.levels * 3 + 1;
-        const ox = SHADOW_DIR.x * h, oy = SHADOW_DIR.y * h;
-        const pts = new Array<number>(b.poly.length * 2);
-        for (let i = 0; i < b.poly.length; i++) { pts[i * 2] = b.poly[i].x + ox; pts[i * 2 + 1] = b.poly[i].y + oy; }
-        shadow.poly(pts, true).fill({ color: SHADOW, alpha: SHADOW_ALPHA });
+        body.poly(flat(b.poly), true).fill(d.building(b.use, b.id));
+        if (d.buildingStroke) body.stroke(d.buildingStroke);
+        if (b.service && this.style !== 'sencillo') MapRenderer.serviceMark(body, b.service, b.cx, b.cy, 3.2, d.ink);
       }
-      for (const b of list) {
-        body.poly(flat(b.poly), true).fill(buildingColor(b.use, b.id)).stroke({ color: INK, width: 0.9, alpha: 0.9, join: 'round' });
-        if (b.service) MapRenderer.serviceMark(body, b.service, b.cx, b.cy, 3.2);
-      }
-      this.world.shadows.addChild(shadow);
       this.world.buildings.addChild(body);
-      this.tiles.push({ x0: tx * TILE, y0: ty * TILE, shadow, body });
+      this.tiles.push({ x0: tx * TILE, y0: ty * TILE, body });
     }
   }
 
-  static serviceMark(g: Graphics, kind: ServiceKind, x: number, y: number, r: number): void {
-    g.circle(x, y, r + 1).fill(CREAM).stroke({ color: INK, width: 0.6 });
+  static serviceMark(g: Graphics, kind: ServiceKind, x: number, y: number, r: number, ink: number): void {
+    g.circle(x, y, r + 1).fill(0xf7e8d2).stroke({ color: ink, width: 0.6 });
     switch (kind) {
       case 'health': g.rect(x - r * 0.25, y - r * 0.75, r * 0.5, r * 1.5).fill(0xd23b33); g.rect(x - r * 0.75, y - r * 0.25, r * 1.5, r * 0.5).fill(0xd23b33); break;
       case 'school': g.circle(x, y, r * 0.55).fill(0xf0bf3c); break;
@@ -157,8 +172,7 @@ export class MapRenderer {
     const tl = w.toWorld(0, 0), br = w.toWorld(w.width, w.height);
     const margin = 40;
     for (const t of this.tiles) {
-      const vis = t.x0 + TILE + margin > tl.x && t.x0 - margin < br.x && t.y0 + TILE + margin > tl.y && t.y0 - margin < br.y;
-      t.shadow.visible = vis; t.body.visible = vis;
+      t.body.visible = t.x0 + TILE + margin > tl.x && t.x0 - margin < br.x && t.y0 + TILE + margin > tl.y && t.y0 - margin < br.y;
     }
   }
 
@@ -168,10 +182,20 @@ export class MapRenderer {
       if (Math.abs(b.cx - x) > 80 || Math.abs(b.cy - y) > 80) continue;
       if (pointInPoly(x, y, b.poly)) {
         const use = { residential: 'Viviendas', commercial: 'Comercio y oficinas', industrial: 'Industria', public: 'Equipamiento' }[b.use];
-        return { text: b.name ?? use, sub: `${b.name ? use + ' · ' : ''}${b.levels} plantas` };
+        const people = b.use === 'residential' ? `${Math.max(2, Math.round((b.area * b.levels) / 35))} vecinos aprox.` : `${Math.max(2, Math.round((b.area * b.levels) / 25))} empleos aprox.`;
+        return { text: b.name ?? use, sub: `${b.name ? use + ' · ' : ''}${b.levels} plantas · ${people}` };
       }
     }
     const hit = this.graph.nearestEdge(x, y, 8);
+    if (!hit) {
+      for (const z of this.data.zones ?? []) {
+        if (Math.abs(z.cx - x) > 3000 || Math.abs(z.cy - y) > 3000) continue;
+        if (pointInPoly(x, y, z.poly)) {
+          const kind = { residential: 'Zona residencial', commercial: 'Zona comercial', industrial: 'Zona industrial' }[z.kind];
+          return { text: kind, sub: `${Math.round(z.area / 10000)} ha · ${z.kind === 'residential' ? 'vecinos' : 'empleos'} aprox. ${Math.round(z.area * (z.kind === 'residential' ? 0.0065 : z.kind === 'commercial' ? 0.004 : 0.0022)).toLocaleString('es-ES')}` };
+        }
+      }
+    }
     if (hit) {
       const e = this.graph.edges[hit.edge];
       const cls = { motorway: 'Autovía', primary: 'Vía principal', secondary: 'Avenida', tertiary: 'Calle principal', residential: 'Calle', service: 'Vía de servicio', pedestrian: 'Peatonal' }[e.cls];

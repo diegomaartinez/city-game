@@ -27,8 +27,18 @@ export const HIGHWAY_CLASSES = [
   'service', 'pedestrian', 'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link',
 ];
 
-export function buildQuery(lat: number, lon: number, radius: number): string {
-  const a = `(around:${Math.round(radius)},${lat.toFixed(6)},${lon.toFixed(6)})`;
+export const MAJOR_CLASSES = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'];
+
+/** Cuadrado de lado 2·radius alrededor del centro, como filtro bbox de Overpass (sur,oeste,norte,este). */
+export function bboxFilter(lat: number, lon: number, radius: number): string {
+  const dLat = radius / 110574;
+  const dLon = radius / (111320 * Math.cos((lat * Math.PI) / 180));
+  return `(${(lat - dLat).toFixed(6)},${(lon - dLon).toFixed(6)},${(lat + dLat).toFixed(6)},${(lon + dLon).toFixed(6)})`;
+}
+
+/** Consulta del núcleo detallado: todas las calles, edificios, parques y agua. */
+export function buildQuery(lat: number, lon: number, radius: number, coastRadius = radius): string {
+  const a = bboxFilter(lat, lon, radius);
   return `[out:json][timeout:180];
 (
   way["highway"~"^(${HIGHWAY_CLASSES.join('|')})$"]${a};
@@ -41,18 +51,51 @@ export function buildQuery(lat: number, lon: number, radius: number): string {
   relation["natural"="water"]${a};
   way["waterway"="riverbank"]${a};
   way["amenity"~"^(hospital|school|police|fire_station|university|college)$"]${a};
+  way["natural"="coastline"]${bboxFilter(lat, lon, coastRadius * 1.15 + 300)};
 );
 out geom;`;
 }
 
-export interface FetchProgress { phase: 'connecting' | 'downloading' | 'parsing'; bytes: number; server: string; attempt: number }
+/** Consulta del anillo exterior (área metropolitana): calles principales, zonas de uso del suelo, parques y agua. */
+export function buildRingQuery(lat: number, lon: number, radius: number): string {
+  const a = bboxFilter(lat, lon, radius);
+  return `[out:json][timeout:240];
+(
+  way["highway"~"^(${MAJOR_CLASSES.join('|')})$"]${a};
+  way["landuse"~"^(residential|commercial|industrial|retail|forest|cemetery)$"]${a};
+  relation["landuse"~"^(residential|commercial|industrial|retail)$"]["type"="multipolygon"]${a};
+  way["leisure"="park"]${a};
+  relation["leisure"="park"]${a};
+  way["natural"~"^(water|wood)$"]${a};
+  relation["natural"="water"]${a};
+  way["waterway"="riverbank"]${a};
+);
+out geom;`;
+}
 
-export async function fetchOsm(
-  lat: number, lon: number, radius: number,
+export interface FetchProgress { phase: 'connecting' | 'downloading' | 'parsing'; bytes: number; server: string; attempt: number; part: 1 | 2; parts: 1 | 2 }
+
+/** Descarga el núcleo y, si el radio es mayor que `core`, también el anillo exterior; devuelve todo junto. */
+export async function fetchCity(
+  lat: number, lon: number, radius: number, core: number,
   onProgress?: (p: FetchProgress) => void,
   signal?: AbortSignal,
 ): Promise<OsmResponse> {
-  const body = 'data=' + encodeURIComponent(buildQuery(lat, lon, radius));
+  const parts: 1 | 2 = radius > core ? 2 : 1;
+  const main = await fetchOsm(buildQuery(lat, lon, Math.min(radius, core), radius), p => onProgress?.({ ...p, part: 1, parts }), signal);
+  if (parts === 1) return main;
+  const ring = await fetchOsm(buildRingQuery(lat, lon, radius), p => onProgress?.({ ...p, part: 2, parts }), signal);
+  const seen = new Set(main.elements.map(e => e.type + e.id));
+  for (const e of ring.elements) if (!seen.has(e.type + e.id)) main.elements.push(e);
+  return main;
+}
+
+export async function fetchOsm(
+  query: string,
+  onProgress?: (p: Omit<FetchProgress, 'part' | 'parts'>) => void,
+  signal?: AbortSignal,
+): Promise<OsmResponse> {
+  const body = 'data=' + encodeURIComponent(query);
   const errors: string[] = [];
   for (let attempt = 0; attempt < 2; attempt++) {
     for (const server of OVERPASS_SERVERS) {
@@ -62,7 +105,7 @@ export async function fetchOsm(
       const ctrl = new AbortController();
       const onAbort = () => ctrl.abort();
       signal?.addEventListener('abort', onAbort);
-      const timer = setTimeout(() => ctrl.abort(), 200_000);
+      const timer = setTimeout(() => ctrl.abort(), 300_000);
       try {
         const r = await fetch(server, { method: 'POST', body, signal: ctrl.signal, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
         if (!r.ok || !r.body) { errors.push(`${host}: HTTP ${r.status}`); continue; }

@@ -22,10 +22,21 @@ export interface ModeDef {
   trackCost: number;
 }
 
+/** Personas que representa cada viajero dibujado. */
+export const PEOPLE_PER_PASSENGER = 10;
+
 export const MODE: Record<Mode, ModeDef> = {
-  bus:   { name: 'Bus',   stopName: 'Parada de bus',    capacity: 45,  speed: 40, dwell: 2.5, walk: 330, stopCost: 200,  vehicleCost: 2000,  upkeep: 60,  trackCost: 0 },
-  metro: { name: 'Metro', stopName: 'Estación de metro', capacity: 320, speed: 90, dwell: 4,   walk: 500, stopCost: 6000, vehicleCost: 15000, upkeep: 300, trackCost: 10 },
+  bus:   { name: 'Bus',   stopName: 'Parada de bus',    capacity: 8,  speed: 40, dwell: 2.5, walk: 330, stopCost: 3000,   vehicleCost: 120000, upkeep: 600,  trackCost: 0 },
+  metro: { name: 'Metro', stopName: 'Estación de metro', capacity: 80, speed: 90, dwell: 4,   walk: 500, stopCost: 150000, vehicleCost: 500000, upkeep: 2000, trackCost: 800 },
 };
+
+/** Precio del billete por modo (editable en el juego). */
+export const FARES: Record<Mode, number> = { bus: 1.5, metro: 2 };
+
+/** Probabilidad de que un viajero acepte el precio. */
+export function fareAcceptance(fare: number): number {
+  return Math.max(0.35, Math.min(1, 1.15 - 0.15 * fare));
+}
 
 export const LINE_COLORS = [0xd23b33, 0x2f6fc4, 0xf0bf3c, 0x3c8d4f, 0xe57a2e, 0x8e5bb5, 0x1fa3a3, 0xe88a82, 0x6b4f2a, 0x3b3b40];
 
@@ -82,6 +93,8 @@ export interface Line {
   color: number;
   name: string;
   stops: number[];
+  /** Puntos de paso entre cada parada y la siguiente (vias[i] va de stops[i] a stops[i+1]; el último cierra el bucle). */
+  vias: Pt[][];
   loop: boolean;
   fwd: Segment[];
   back: Segment[];
@@ -90,6 +103,8 @@ export interface Line {
   /** Tramos sin ruta por calles (se dibujan rectos). */
   warnings: number;
   boarded: number;
+  boardedToday: number;
+  incomeToday: number;
 }
 
 export interface NetworkStats { delivered: number; lost: number; spawned: number; unserved: number; tripTime: number; trips: number }
@@ -199,7 +214,7 @@ export class Network {
   createLine(mode: Mode): Line {
     const used = new Set([...this.lines.values()].map(l => l.color));
     const color = LINE_COLORS.find(c => !used.has(c)) ?? LINE_COLORS[this.lines.size % LINE_COLORS.length];
-    const line: Line = { id: this.nextLine++, mode, color, name: `${mode === 'bus' ? 'Línea' : 'Metro'} ${this.nextLine - 1}`, stops: [], loop: false, fwd: [], back: [], length: 0, vehicles: [], warnings: 0, boarded: 0 };
+    const line: Line = { id: this.nextLine++, mode, color, name: `${mode === 'bus' ? 'Línea' : 'Metro'} ${this.nextLine - 1}`, stops: [], vias: [], loop: false, fwd: [], back: [], length: 0, vehicles: [], warnings: 0, boarded: 0, boardedToday: 0, incomeToday: 0 };
     this.lines.set(line.id, line);
     this.version++;
     return line;
@@ -220,9 +235,10 @@ export class Network {
     const s = this.stops.get(stopId);
     if (!s || s.mode !== line.mode) return 'invalid';
     if (line.loop) return 'invalid';
-    if (line.stops.length >= 3 && stopId === line.stops[0]) { line.loop = true; this.rebuild(line); return 'closed'; }
+    if (line.stops.length >= 3 && stopId === line.stops[0]) { line.loop = true; line.vias[line.stops.length - 1] = []; this.rebuild(line); return 'closed'; }
     if (line.stops.includes(stopId)) return 'invalid';
     line.stops.push(stopId);
+    line.vias = line.stops.map((_, i) => line.vias[i] ?? []);
     if (!s.lines.includes(line.id)) s.lines.push(line.id);
     this.rebuild(line);
     return 'added';
@@ -231,7 +247,16 @@ export class Network {
   removeStopFromLine(lineId: number, stopId: number): void {
     const line = this.lines.get(lineId);
     if (!line) return;
+    const idx = line.stops.indexOf(stopId);
     line.stops = line.stops.filter(s => s !== stopId);
+    if (idx >= 0) {
+      // los puntos de paso del tramo anterior y el siguiente se unen
+      const before = idx > 0 ? line.vias[idx - 1] ?? [] : [];
+      const after = line.vias[idx] ?? [];
+      line.vias.splice(idx, 1);
+      if (idx > 0) line.vias[idx - 1] = [...before, ...after]; else line.vias[0] = [];
+    }
+    line.vias = line.stops.map((_, i) => line.vias[i] ?? []);
     const s = this.stops.get(stopId);
     if (s) s.lines = s.lines.filter(l => l !== lineId);
     if (line.stops.length < 3) line.loop = false;
@@ -246,39 +271,94 @@ export class Network {
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
 
+  /** Puntos de paso de un tramo: el jugador puede ajustar por dónde va la línea sin añadir paradas. */
+  setVias(line: Line, seg: number, vias: Pt[]): void {
+    line.vias[seg] = vias;
+    this.rebuild(line);
+  }
+
+  /** Tramo (índice de fwd) y posición a lo largo de él más cercanos a un punto. */
+  nearestSegment(line: Line, x: number, y: number, maxDist: number): { seg: number; t: number; d: number } | null {
+    let best: { seg: number; t: number; d: number } | null = null;
+    line.fwd.forEach((sg, si) => {
+      for (let i = 0; i + 1 < sg.pts.length; i++) {
+        const a = sg.pts[i], b = sg.pts[i + 1];
+        const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+        let t = l2 > 0 ? ((x - a.x) * dx + (y - a.y) * dy) / l2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        const d = Math.hypot(x - (a.x + dx * t), y - (a.y + dy * t));
+        if (d <= maxDist && (!best || d < best.d)) best = { seg: si, t: (sg.cum[i] + t * (sg.cum[i + 1] - sg.cum[i])) / (sg.len || 1), d };
+      }
+    });
+    return best;
+  }
+
+  /** Distancia normalizada a la que cae un punto de paso dentro de su tramo (para ordenarlos). */
+  viaPosition(line: Line, seg: number, p: Pt): number {
+    const sg = line.fwd[seg];
+    if (!sg) return 0;
+    let best = 0, bd = Infinity;
+    for (let i = 0; i + 1 < sg.pts.length; i++) {
+      const a = sg.pts[i], b = sg.pts[i + 1];
+      const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+      let t = l2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+      if (d < bd) { bd = d; best = (sg.cum[i] + t * (sg.cum[i + 1] - sg.cum[i])) / (sg.len || 1); }
+    }
+    return best;
+  }
+
+  /** Ajusta un punto de paso a la red: para el bus, al nodo transitable más cercano. */
+  snapVia(line: Line, p: Pt): Pt | null {
+    if (line.mode === 'metro') return p;
+    const n = this.graph.nearestNode(p.x, p.y, 45, true);
+    if (n < 0) return null;
+    return { x: this.graph.nodes[n].x, y: this.graph.nodes[n].y };
+  }
+
   private rebuild(line: Line): void {
     line.fwd = []; line.back = []; line.warnings = 0;
     const n = line.stops.length;
-    for (let i = 0; i + 1 < n; i++) line.fwd.push(this.segment(line, line.stops[i], line.stops[i + 1]));
-    if (line.loop && n >= 3) line.fwd.push(this.segment(line, line.stops[n - 1], line.stops[0]));
-    if (!line.loop) for (let i = 0; i + 1 < n; i++) line.back.push(this.segment(line, line.stops[i + 1], line.stops[i]));
+    line.vias = line.stops.map((_, i) => line.vias[i] ?? []);
+    for (let i = 0; i + 1 < n; i++) line.fwd.push(this.segment(line, line.stops[i], line.stops[i + 1], line.vias[i]));
+    if (line.loop && n >= 3) line.fwd.push(this.segment(line, line.stops[n - 1], line.stops[0], line.vias[n - 1]));
+    if (!line.loop) for (let i = 0; i + 1 < n; i++) line.back.push(this.segment(line, line.stops[i + 1], line.stops[i], line.vias[i].slice().reverse()));
     line.length = line.fwd.reduce((a, s) => a + s.len, 0) + line.back.reduce((a, s) => a + s.len, 0);
     this.spaceVehicles(line);
     this.dropPlansUsing(line.id);
     this.version++;
   }
 
-  private segment(line: Line, fromId: number, toId: number): Segment {
+  private segment(line: Line, fromId: number, toId: number, vias: Pt[] = []): Segment {
     const a = this.stops.get(fromId)!, b = this.stops.get(toId)!;
     const mk = (pts: Pt[], straight: boolean): Segment => {
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
       return { pts, cum, len: cum[cum.length - 1], straight };
     };
-    if (line.mode === 'metro' || a.node < 0 || b.node < 0) return mk([{ x: a.x, y: a.y }, { x: b.x, y: b.y }], true);
-    // primero respetando los sentidos únicos; si no hay forma, en contra dirección; si tampoco, en recta
-    let path = this.graph.route(a.node, b.node, 40000);
-    if (!path) { path = this.graph.route(a.node, b.node, 40000, true); if (path) line.warnings++; }
-    if (!path) { line.warnings++; return mk([{ x: a.rx, y: a.ry }, { x: b.rx, y: b.ry }], true); }
+    if (line.mode === 'metro' || a.node < 0 || b.node < 0) return mk([{ x: a.x, y: a.y }, ...vias.map(v => ({ ...v })), { x: b.x, y: b.y }], true);
+    // nodos por los que debe pasar: parada, puntos de paso, parada
+    const nodes = [a.node, ...vias.map(v => this.graph.nearestNode(v.x, v.y, 60, true)).filter(n => n >= 0), b.node];
     const pts: Pt[] = [{ x: a.rx, y: a.ry }];
-    let cur = a.node;
-    for (const ei of path) {
-      const e = this.graph.edges[ei];
-      cur = e.a === cur ? e.b : e.a;
-      const n = this.graph.nodes[cur];
-      pts.push({ x: n.x, y: n.y });
+    let straight = false;
+    for (let k = 0; k + 1 < nodes.length; k++) {
+      const from = nodes[k], to = nodes[k + 1];
+      if (from === to) continue;
+      // primero respetando los sentidos únicos; si no hay forma, en contra dirección; si tampoco, en recta
+      let path = this.graph.route(from, to, 40000);
+      if (!path) { path = this.graph.route(from, to, 40000, true); if (path) line.warnings++; }
+      if (!path) { line.warnings++; straight = true; const n = this.graph.nodes[to]; pts.push({ x: n.x, y: n.y }); continue; }
+      let cur = from;
+      for (const ei of path) {
+        const e = this.graph.edges[ei];
+        cur = e.a === cur ? e.b : e.a;
+        const n = this.graph.nodes[cur];
+        pts.push({ x: n.x, y: n.y });
+      }
     }
-    return mk(pts, false);
+    pts[pts.length - 1] = { x: b.rx, y: b.ry };
+    return mk(pts, straight);
   }
 
   // ───────────── vehículos ─────────────
@@ -411,7 +491,7 @@ export class Network {
         const toIdx = line.stops.indexOf(leg.to);
         ok = v.dir === 1 ? toIdx > si : toIdx < si;
       } else if (ok && line.loop) ok = line.stops.includes(leg.to) && n > 1;
-      if (ok) { stop.queue.splice(i, 1); v.passengers.push(p); line.boarded++; } else i++;
+      if (ok) { stop.queue.splice(i, 1); v.passengers.push(p); line.boarded++; line.boardedToday++; } else i++;
     }
   }
 
@@ -519,6 +599,13 @@ export class Network {
       if (last && last.line === h.line && last.to === h.from) last.to = h.to; else legs.push({ ...h });
     }
     return legs;
+  }
+
+  /** Precio de un plan: el billete más caro de los modos que usa. */
+  planFare(legs: Leg[]): number {
+    let f = 0;
+    for (const leg of legs) { const l = this.lines.get(leg.line); if (l) f = Math.max(f, FARES[l.mode]); }
+    return f;
   }
 
   /** Tiempo estimado (s) de un plan, para comparar alternativas. */

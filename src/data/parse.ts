@@ -1,8 +1,9 @@
 // Convierte la respuesta de Overpass en la ciudad del juego: calles, edificios (con su uso inferido),
 // zonas verdes y agua, todo proyectado a metros alrededor del centro.
 import type { OsmElement, OsmResponse } from './overpass.ts';
-import type { Area, AreaKind, Building, BuildingUse, CityData, Landuse, Pt, RoadClass, RoadWay, ServiceKind } from './types.ts';
+import { CITY_VERSION, CORE_RADIUS, MARGIN, type Area, type AreaKind, type Building, type BuildingUse, type CityData, type Landuse, type Pt, type RoadClass, type RoadWay, type ServiceKind, type Zone } from './types.ts';
 import { Projection, bbox, centroid, hashInt, pointInPoly, polygonArea } from './geo.ts';
+import { seaPolygons } from './coast.ts';
 
 type Tags = Record<string, string>;
 type LatLon = { lat: number; lon: number };
@@ -92,6 +93,7 @@ export interface ParseStats { roads: number; buildings: number; areas: number; s
 
 export function parseOsm(res: OsmResponse, name: string, lat: number, lon: number, radius: number): { city: CityData; stats: ParseStats } {
   const proj = new Projection(lat, lon);
+  const core = Math.min(radius, CORE_RADIUS);
   const toPoly = (g: LatLon[]): Pt[] => {
     const pts = g.map(p => proj.toXY(p.lat, p.lon));
     if (pts.length > 1) {
@@ -107,7 +109,8 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
   const areas: Area[] = [];
   const buildingCandidates: Array<{ id: number; tags: Tags; poly: Pt[] }> = [];
   const serviceAreas: Array<{ kind: ServiceKind; poly: Pt[] }> = [];
-  const limit = radius + 400; // margen fuera del radio solicitado
+  const coastlines: Pt[][] = [];
+  const limit = radius + MARGIN; // la isla jugable
 
   const inRange = (poly: Pt[]) => poly.some(p => Math.abs(p.x) <= limit && Math.abs(p.y) <= limit);
 
@@ -125,6 +128,7 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
     const t = el.tags ?? {};
     if (el.type === 'way' && el.geometry) {
       const g = el.geometry;
+      if (t.natural === 'coastline') { coastlines.push(g.map(p => proj.toXY(p.lat, p.lon))); continue; }
       if (t.highway && ROAD_CLASS[t.highway] && t.area !== 'yes') {
         if (t.highway === 'service' && (t.service === 'parking_aisle' || t.service === 'driveway' || t.service === 'drive-through')) continue;
         const pts = g.map(p => proj.toXY(p.lat, p.lon));
@@ -162,6 +166,7 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
         else {
           const ak = areaKind(t);
           if (ak) areas.push({ id: el.id, kind: ak, poly });
+          else if (t.landuse === 'residential' || t.landuse === 'commercial' || t.landuse === 'industrial' || t.landuse === 'retail') landuses.push({ kind: t.landuse === 'retail' ? 'commercial' : t.landuse, poly, bbox: bbox(poly) });
         }
       }
     }
@@ -169,6 +174,11 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
 
   // El agua y los parques grandes al fondo: ordena por área descendente para que los pequeños se vean encima.
   areas.sort((a, b) => polygonArea(b.poly) - polygonArea(a.poly));
+  // El mar va primero de todo, y las islas (bucles de costa con tierra dentro) encima del mar.
+  if (coastlines.length) {
+    const { sea, islands } = seaPolygons(coastlines, limit);
+    areas.unshift(...sea.map((poly, i) => ({ id: -1 - i, kind: 'sea' as AreaKind, poly })), ...islands.map((poly, i) => ({ id: -1000 - i, kind: 'land' as AreaKind, poly })));
+  }
 
   const buildings: Building[] = [];
   const seen = new Set<number>();
@@ -191,6 +201,16 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
     buildings.push({ id: c.id, use: service ? 'public' : inf.use, poly: c.poly, levels, area, cx: ctr.x, cy: ctr.y, service, name: c.tags.name });
   }
 
-  const city: CityData = { name, lat, lon, radius, roads, buildings, areas, fetchedAt: Date.now() };
+  // Fuera del núcleo no hay edificios: las zonas de uso del suelo hacen de población y empleos.
+  const zones: Zone[] = [];
+  for (const lu of landuses) {
+    const area = polygonArea(lu.poly);
+    if (area < 2000) continue;
+    const c = centroid(lu.poly);
+    if (Math.max(Math.abs(c.x), Math.abs(c.y)) < core * 0.95) continue; // dentro del núcleo ya hay edificios
+    zones.push({ id: zones.length + 1, kind: lu.kind, poly: lu.poly, area, cx: c.x, cy: c.y });
+  }
+
+  const city: CityData = { name, lat, lon, radius, core, roads, buildings, areas, zones, fetchedAt: Date.now(), version: CITY_VERSION };
   return { city, stats: { roads: roads.length, buildings: buildings.length, areas: areas.length, services } };
 }

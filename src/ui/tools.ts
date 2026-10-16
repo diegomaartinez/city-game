@@ -3,7 +3,7 @@ import { Graphics } from 'pixi.js';
 import type { Pt } from '../data/types.ts';
 import { pointSegment } from '../data/geo.ts';
 import type { Game } from '../sim/game.ts';
-import { MODE, type Line, type Mode, type Stop } from '../sim/transit.ts';
+import { MODE, PEOPLE_PER_PASSENGER, type Line, type Mode, type Stop } from '../sim/transit.ts';
 import type { MapRenderer } from '../render/mapRenderer.ts';
 import type { TransitRenderer } from '../render/transitRenderer.ts';
 import type { World } from '../render/world.ts';
@@ -28,6 +28,8 @@ export class Tools {
   private lastPinch = 0;
   private hoverStop: Stop | undefined;
   private cursor: Pt = { x: 0, y: 0 };
+  /** Arrastre de un punto de paso de la línea seleccionada. */
+  private viaDrag: { line: Line; seg: number; idx: number; vias: Pt[] } | null = null;
 
   constructor(private world: World, private game: Game, private map: MapRenderer, private transit: TransitRenderer) {
     world.overlay.addChild(this.preview);
@@ -38,6 +40,7 @@ export class Tools {
     c.addEventListener('pointercancel', e => this.up(e));
     c.addEventListener('wheel', e => { e.preventDefault(); world.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0012)); }, { passive: false });
     c.addEventListener('contextmenu', e => e.preventDefault());
+    game.on('network', () => { this.hoverStop = game.net.stopAt(this.cursor.x, this.cursor.y, 14 * Math.max(1, 1.5 / world.zoom)); this.onHover(this.describe(this.cursor)); });
   }
 
   setTool(t: Tool): void {
@@ -51,8 +54,8 @@ export class Tools {
 
   hintFor(t: Tool): string {
     switch (t) {
-      case 'pan': return 'Arrastra para moverte · rueda para ampliar · clic en una línea o parada para ver sus detalles';
-      case 'stop:bus': return `Clic junto a una calle para poner una parada de bus (${MODE.bus.stopCost} €) · los vecinos caminan hasta ${MODE.bus.walk} m`;
+      case 'pan': return this.selected ? 'Arrastra la línea seleccionada para cambiar su recorrido · arrastra sus puntos de paso para moverlos · Esc deselecciona' : 'Arrastra para moverte · rueda para ampliar · clic en una línea o parada para ver sus detalles';
+      case 'stop:bus': return `Clic junto a una calle para poner una parada de bus (${MODE.bus.stopCost.toLocaleString('es-ES')} €) · los vecinos caminan hasta ${MODE.bus.walk} m`;
       case 'stop:metro': return `Clic para poner una estación de metro (${MODE.metro.stopCost.toLocaleString('es-ES')} €) · atrae viajeros a ${MODE.metro.walk} m`;
       case 'line': {
         const l = this.editing;
@@ -113,6 +116,7 @@ export class Tools {
     this.transit.highlight = line;
     this.transit.drawNetwork();
     this.onSelect(line, stop);
+    if (this.tool === 'pan') this.onHint(this.hintFor('pan'));
   }
 
   private lineAt(x: number, y: number, maxDist = 7): Line | null {
@@ -129,11 +133,43 @@ export class Tools {
     return best;
   }
 
+  private get hitK(): number { return Math.max(1, 1.5 / this.world.zoom); }
+
+  /** Punto de paso de la línea bajo el cursor. */
+  private viaAt(line: Line, x: number, y: number): { seg: number; idx: number } | null {
+    const r = 9 * this.hitK;
+    for (let seg = 0; seg < line.vias.length; seg++) {
+      const list = line.vias[seg] ?? [];
+      for (let idx = 0; idx < list.length; idx++) if (Math.hypot(list[idx].x - x, list[idx].y - y) <= r) return { seg, idx };
+    }
+    return null;
+  }
+
   private down(e: PointerEvent): void {
     const c = this.world.app.canvas;
     c.setPointerCapture(e.pointerId);
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (this.pointers.size === 2) { this.lastPinch = this.pinchDist(); return; }
+    // arrastrar la línea seleccionada para ajustar su recorrido (sin añadir paradas)
+    if (this.tool === 'pan' && e.button === 0 && this.selected && this.selected.fwd.length) {
+      const w = this.world.toWorld(e.clientX, e.clientY);
+      const line = this.selected;
+      if (!this.game.net.stopAt(w.x, w.y, 14 * this.hitK)) {
+        const hit = this.viaAt(line, w.x, w.y);
+        if (hit) { this.viaDrag = { line, seg: hit.seg, idx: hit.idx, vias: line.vias[hit.seg].slice() }; return; }
+        const near = this.game.net.nearestSegment(line, w.x, w.y, 7 * this.hitK);
+        if (near) {
+          const vias = (line.vias[near.seg] ?? []).slice();
+          // se inserta en orden según la posición a lo largo del tramo
+          let idx = 0;
+          while (idx < vias.length && this.game.net.viaPosition(line, near.seg, vias[idx]) < near.t) idx++;
+          vias.splice(idx, 0, { x: w.x, y: w.y });
+          this.viaDrag = { line, seg: near.seg, idx, vias };
+          this.onHint('Arrastra para llevar la línea por donde quieras · suelta sobre una calle');
+          return;
+        }
+      }
+    }
     const pan = this.tool === 'pan' || e.button === 1 || e.button === 2;
     if (pan) {
       this.panStart = { x: e.clientX, y: e.clientY, rx: this.world.root.x, ry: this.world.root.y, moved: false };
@@ -161,7 +197,11 @@ export class Tools {
       }
       case 'remove': {
         const s = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
-        if (s) { this.game.removeStop(s.id); this.transit.drawNetwork(); if (this.selected && !this.game.net.lines.has(this.selected.id)) this.select(null); else this.onSelect(this.selected, null); }
+        if (s) { this.game.removeStop(s.id); this.transit.drawNetwork(); if (this.selected && !this.game.net.lines.has(this.selected.id)) this.select(null); else this.onSelect(this.selected, null); break; }
+        if (this.selected) {
+          const hit = this.viaAt(this.selected, w.x, w.y);
+          if (hit) { const vias = this.selected.vias[hit.seg].slice(); vias.splice(hit.idx, 1); this.game.setVias(this.selected, hit.seg, vias); this.transit.drawNetwork(); }
+        }
         break;
       }
     }
@@ -176,6 +216,13 @@ export class Tools {
       const [a, b] = [...this.pointers.values()];
       if (this.lastPinch > 0) this.world.zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / this.lastPinch);
       this.lastPinch = d;
+      return;
+    }
+    if (this.viaDrag) {
+      const w = this.world.toWorld(e.clientX, e.clientY);
+      const { line, seg, idx, vias } = this.viaDrag;
+      vias[idx] = { x: w.x, y: w.y };
+      this.transit.previewVias(this.preview, line, seg, vias, idx);
       return;
     }
     if (this.panStart) {
@@ -194,6 +241,19 @@ export class Tools {
 
   private up(e: PointerEvent): void {
     this.pointers.delete(e.pointerId);
+    if (this.viaDrag) {
+      const { line, seg, idx, vias } = this.viaDrag;
+      this.viaDrag = null;
+      this.preview.clear();
+      const w = this.world.toWorld(e.clientX, e.clientY);
+      const snapped = this.game.net.snapVia(line, w);
+      if (!snapped) { this.onHint('Suelta el punto de paso sobre una calle transitable'); return; }
+      vias[idx] = snapped;
+      this.game.setVias(line, seg, vias);
+      this.transit.drawNetwork();
+      this.onHint('Recorrido ajustado · arrastra el punto para moverlo, o quítalo con la herramienta D');
+      return;
+    }
     if (this.panStart) {
       const moved = this.panStart.moved;
       this.panStart = null;
@@ -223,10 +283,13 @@ export class Tools {
       case 'line':
         if (this.editing) this.transit.previewLineExtension(p, this.editing, w, this.hoverStop);
         break;
-      case 'remove':
+      case 'remove': {
         p.clear();
-        if (this.hoverStop) p.circle(this.hoverStop.x, this.hoverStop.y, 12).stroke({ color: 0xd23b33, width: 2.5 });
+        const k = this.hitK;
+        if (this.hoverStop) p.circle(this.hoverStop.x, this.hoverStop.y, 12 * k).stroke({ color: 0xd23b33, width: 2.5 * k });
+        else if (this.selected) { const hit = this.viaAt(this.selected, w.x, w.y); if (hit) { const v = this.selected.vias[hit.seg][hit.idx]; p.circle(v.x, v.y, 8 * k).stroke({ color: 0xd23b33, width: 2.5 * k }); } }
         break;
+      }
       default:
         p.clear();
     }
@@ -242,10 +305,10 @@ export class Tools {
     const s = this.hoverStop;
     if (s) {
       const lines = s.lines.map(id => this.game.net.lines.get(id)?.name).filter(Boolean).join(', ');
-      return { text: s.name, sub: `${MODE[s.mode].stopName} · ${s.queue.length} esperando${lines ? ' · ' + lines : ' · sin línea'}` };
+      return { text: s.name, sub: `${MODE[s.mode].stopName} · ${s.queue.length * PEOPLE_PER_PASSENGER} esperando${lines ? ' · ' + lines : ' · sin línea'}` };
     }
     const l = this.tool === 'pan' ? this.lineAt(w.x, w.y) : null;
-    if (l) return { text: l.name, sub: `${MODE[l.mode].name} · ${l.stops.length} paradas · ${l.vehicles.length} vehículos · ${l.vehicles.reduce((a, v) => a + v.passengers.length, 0)} a bordo` };
+    if (l) return { text: l.name, sub: `${MODE[l.mode].name} · ${l.stops.length} paradas · ${l.vehicles.length} vehículos · ${l.vehicles.reduce((a, v) => a + v.passengers.length, 0) * PEOPLE_PER_PASSENGER} a bordo` };
     return this.map.describe(w.x, w.y);
   }
 

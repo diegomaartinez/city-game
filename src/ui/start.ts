@@ -1,9 +1,9 @@
 // Pantalla de inicio: buscar una ciudad, elegir el radio y descargar el mapa (o continuar una partida).
 import { cache, cityKey } from '../data/cache.ts';
 import { searchPlaces, type Place } from '../data/nominatim.ts';
-import { fetchOsm } from '../data/overpass.ts';
+import { fetchCity } from '../data/overpass.ts';
 import { parseOsm } from '../data/parse.ts';
-import type { CityData } from '../data/types.ts';
+import { CITY_VERSION, CORE_RADIUS, type CityData } from '../data/types.ts';
 import type { SaveData } from '../sim/game.ts';
 
 export interface StartResult { city: CityData; key: string; save?: SaveData }
@@ -24,7 +24,7 @@ export function showStart(): Promise<StartResult> {
     root.innerHTML = `
       <div class="panel card">
         <h1>Little <span>Transit</span></h1>
-        <p class="tagline">Elige una ciudad real y diseña su red de bus y metro. Tranquilo, sin prisas.</p>
+        <p class="tagline">Elige una ciudad real y diseña su red de bus y metro. Sin prisas.</p>
         <div class="search">
           <input id="q" type="text" placeholder="Busca una ciudad… (Madrid, Lugo, Lisboa)" autocomplete="off" />
           <ul class="results card hidden" id="results"></ul>
@@ -32,9 +32,10 @@ export function showStart(): Promise<StartResult> {
         <div class="chosen" id="chosen">Escribe el nombre de una ciudad y elige un resultado.</div>
         <div class="row">
           <label for="radius">Radio</label>
-          <input id="radius" type="range" min="500" max="3000" step="250" value="1500" />
+          <input id="radius" type="range" min="500" max="10000" step="500" value="1500" />
           <b id="radiusLabel">1,5 km</b>
         </div>
+        <div class="muted" id="radiusNote" style="font-size:12px;margin-top:4px"></div>
         <div class="row">
           <button class="btn primary" id="go" disabled>Cargar ciudad</button>
           <button class="btn small hidden" id="cancel">Cancelar</button>
@@ -65,7 +66,14 @@ export function showStart(): Promise<StartResult> {
     let searchAbort: AbortController | null = null;
 
     const fmtKm = (m: number) => (m / 1000).toLocaleString('es-ES', { maximumFractionDigits: 2 }) + ' km';
-    radius.oninput = () => { radiusLabel.textContent = fmtKm(+radius.value); };
+    const radiusNote = root.querySelector<HTMLElement>('#radiusNote')!;
+    const updateRadius = () => {
+      const r = +radius.value;
+      radiusLabel.textContent = fmtKm(r);
+      radiusNote.textContent = r > CORE_RADIUS ? `Hasta ${fmtKm(CORE_RADIUS)} del centro con todos los edificios; más allá, calles principales y zonas de uso del suelo (área metropolitana). Descarga más larga.` : 'Todas las calles y edificios. Más radio, más descarga.';
+    };
+    radius.oninput = updateRadius;
+    updateRadius();
 
     const setPlace = (p: Place) => {
       place = p;
@@ -118,19 +126,21 @@ export function showStart(): Promise<StartResult> {
       abort = new AbortController();
       try {
         const cached = await cache.getCity(key);
-        if (cached) {
+        if (cached && cached.version === CITY_VERSION) {
           progress.textContent = 'Ya tenías este mapa guardado.';
           const save = await cache.getSave<SaveData>(key);
           finish({ city: cached, key, save });
           return;
         }
         progress.textContent = 'Conectando con OpenStreetMap…';
-        const res = await fetchOsm(p.lat, p.lon, rad, pr => {
-          if (pr.phase === 'connecting') progress.textContent = `Conectando con ${pr.server}${pr.attempt ? ' (reintento)' : ''}…`;
+        const res = await fetchCity(p.lat, p.lon, rad, CORE_RADIUS, pr => {
+          const what = pr.parts === 2 ? (pr.part === 1 ? 'el centro (calles y edificios)' : 'el área metropolitana (calles principales y zonas)') : 'calles y edificios';
+          const base = pr.parts === 2 && pr.part === 2 ? 50 : 0;
+          if (pr.phase === 'connecting') progress.textContent = `Conectando con ${pr.server}${pr.attempt ? ' (reintento)' : ''} para ${what}… puede tardar un minuto`;
           else if (pr.phase === 'downloading') {
             const mb = pr.bytes / 1e6;
-            progress.textContent = `Descargando calles y edificios… ${mb.toFixed(1)} MB`;
-            barFill.style.width = `${Math.min(90, 5 + mb * 6)}%`;
+            progress.textContent = `Descargando ${what}… ${mb.toFixed(1)} MB`;
+            barFill.style.width = `${Math.min(base + 40, base + 5 + mb * 4)}%`;
           } else progress.textContent = 'Leyendo el mapa…';
         }, abort.signal);
         barFill.style.width = '95%';
@@ -140,7 +150,8 @@ export function showStart(): Promise<StartResult> {
         progress.textContent = `${stats.roads} calles, ${stats.buildings} edificios y ${stats.areas} zonas verdes. ¡Vamos!`;
         barFill.style.width = '100%';
         await cache.putCity(key, city).catch(() => undefined);
-        finish({ city, key });
+        const save = await cache.getSave<SaveData>(key).catch(() => undefined);
+        finish({ city, key, save });
       } catch (e) {
         const msg = (e as Error).message;
         progress.innerHTML = `<span class="error">${msg === 'cancelado' ? 'Cancelado.' : msg}</span>`;
@@ -164,7 +175,14 @@ export function showStart(): Promise<StartResult> {
         const info = save ? `día ${Math.floor(save.minute / 1440) + 1}` : 'sin empezar';
         li.innerHTML = `<span><b>${c.name}</b> · ${fmtKm(c.radius)} · <small>${info}</small></span>`;
         const play = el('button', 'btn small', save ? 'Continuar' : 'Jugar');
-        play.onclick = () => finish({ city: c, key, save });
+        play.onclick = () => {
+          if (c.version === CITY_VERSION) { finish({ city: c, key, save }); return; }
+          // mapa guardado con un formato antiguo: se vuelve a descargar conservando la partida
+          place = { name: c.name, displayName: c.name, lat: c.lat, lon: c.lon, type: 'city' };
+          radius.value = String(c.radius); radiusLabel.textContent = fmtKm(c.radius);
+          chosen.innerHTML = `<b>${c.name}</b> · el mapa se actualizará al cargar`;
+          void loadNew();
+        };
         const del = el('button', 'btn small', '✕');
         del.title = 'Borrar';
         del.onclick = async () => { await cache.deleteCity(key); await cache.deleteSave(key); li.remove(); if (!savedList.children.length) saved.classList.add('hidden'); };

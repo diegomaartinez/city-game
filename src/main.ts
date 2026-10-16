@@ -9,17 +9,22 @@ import { TransitRenderer } from './render/transitRenderer.ts';
 import { Tools } from './ui/tools.ts';
 import { Hud } from './ui/hud.ts';
 import { showStart, type StartResult } from './ui/start.ts';
+import { loadStyle, saveStyle } from './render/palette.ts';
 
 async function play(start: StartResult): Promise<void> {
   const world = new World();
   await world.init(document.body);
 
   const game = new Game(start.city);
+  const style = loadStyle();
   const map = new MapRenderer(world, start.city, game.graph);
-  map.drawAll();
+  map.drawAll(style);
   const transit = new TransitRenderer(world, game);
+  transit.setStyle(style);
   const tools = new Tools(world, game, map, transit);
   const hud = new Hud(game, tools);
+  hud.style = style;
+  hud.onStyle = s => { saveStyle(s); map.drawAll(s); transit.setStyle(s); };
   if (start.save) game.loadSave(start.save as SaveData);
   transit.drawNetwork();
   world.centerOn({ x: 0, y: 0 }, Math.min(1.2, Math.min(world.width, world.height) / (start.city.radius * 1.9)));
@@ -27,7 +32,7 @@ async function play(start: StartResult): Promise<void> {
 
   let speed = 1;
   hud.onSpeed = s => { speed = s; };
-  hud.onHeat = on => { transit.showHeat = on; };
+  hud.onOverlay = mode => { transit.overlay = mode; };
 
   const save = async () => { try { await cache.putSave(start.key, game.toSave()); } catch { /* sin espacio o modo privado */ } };
   let running = true;

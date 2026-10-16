@@ -37,7 +37,7 @@ export interface Building {
   name?: string;
 }
 
-export type AreaKind = 'park' | 'water' | 'wood' | 'grass' | 'cemetery' | 'plaza';
+export type AreaKind = 'sea' | 'land' | 'park' | 'water' | 'wood' | 'grass' | 'cemetery' | 'plaza';
 
 export interface Area { id: number; kind: AreaKind; poly: Pt[] }
 
@@ -45,15 +45,29 @@ export type LanduseKind = 'residential' | 'commercial' | 'industrial';
 
 export interface Landuse { kind: LanduseKind; poly: Pt[]; bbox: [number, number, number, number] }
 
+/** Zona de uso del suelo (fuera del núcleo detallado hace de "edificios": población y empleos por hectárea). */
+export interface Zone { id: number; kind: LanduseKind; poly: Pt[]; area: number; cx: number; cy: number }
+
 export interface CityData {
   name: string;
   lat: number;
   lon: number;
-  /** Radio cargado en metros. */
+  /** Radio cargado en metros (lado del cuadrado jugable / 2, menos el margen). */
   radius: number;
+  /** Radio del núcleo con edificios; más allá solo hay zonas de uso del suelo y calles principales. */
+  core: number;
   roads: RoadWay[];
   buildings: Building[];
   areas: Area[];
+  zones: Zone[];
   /** Momento de descarga (ms). */
   fetchedAt: number;
+  /** Versión del formato; si cambia, la ciudad se vuelve a descargar. */
+  version?: number;
 }
+
+export const CITY_VERSION = 3;
+/** Radio máximo con edificios detallados. */
+export const CORE_RADIUS = 3000;
+/** Margen (m) que se añade al radio para formar la isla jugable. */
+export const MARGIN = 60;

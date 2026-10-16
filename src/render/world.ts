@@ -2,15 +2,19 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import type { Pt } from '../data/types.ts';
 import { rng } from '../data/geo.ts';
-import { SAND, SAND_DARK, SAND_LIGHT } from './palette.ts';
+import { MARGIN } from '../data/types.ts';
+
 
 export class World {
   readonly app = new Application();
   readonly root = new Container();
+  /** Todo lo jugable va dentro de la "isla": un cuadrado recortado que flota sobre el fondo. */
+  readonly island = new Container();
+  private islandMask = new Graphics();
+  private islandShadow = new Graphics();
   readonly ground = new Graphics();
   readonly areas = new Container();
   readonly roads = new Container();
-  readonly shadows = new Container();
   readonly buildings = new Container();
   readonly heat = new Container();
   readonly lines = new Container();
@@ -23,29 +27,43 @@ export class World {
   maxZoom = 8;
 
   async init(parent: HTMLElement): Promise<void> {
-    await this.app.init({ background: SAND, resizeTo: window, antialias: true, resolution: Math.min(2, window.devicePixelRatio || 1), autoDensity: true, preference: 'webgl' });
+    await this.app.init({ background: 0xe8b98c, resizeTo: window, antialias: true, resolution: Math.min(2, window.devicePixelRatio || 1), autoDensity: true, preference: 'webgl' });
     parent.appendChild(this.app.canvas);
     this.app.canvas.id = 'world';
-    this.root.addChild(this.ground, this.areas, this.roads, this.shadows, this.buildings, this.heat, this.lines, this.stops, this.vehicles, this.markers, this.overlay);
+    this.island.addChild(this.ground, this.areas, this.roads, this.buildings, this.heat, this.lines, this.stops, this.vehicles, this.markers);
+    this.island.mask = this.islandMask;
+    this.root.addChild(this.islandShadow, this.islandMask, this.island, this.overlay);
     this.app.stage.addChild(this.root);
     this.app.canvas.style.touchAction = 'none';
   }
 
-  drawGround(radius: number): void {
+  /** Lado del cuadrado jugable / 2. */
+  half = 0;
+
+  drawGround(radius: number, bg: number, patches: [number, number] | null, backdrop: number): void {
     const g = this.ground;
     g.clear();
-    const half = radius + 600;
-    g.rect(-half, -half, half * 2, half * 2).fill(SAND);
-    const r = rng(7);
-    for (let i = 0; i < 140; i++) {
-      const x = (r() * 2 - 1) * half, y = (r() * 2 - 1) * half;
-      const w = 40 + r() * 260, h = w * (0.4 + r() * 0.5);
-      g.ellipse(x, y, w, h).fill({ color: r() < 0.7 ? SAND_LIGHT : SAND_DARK, alpha: 0.35 + r() * 0.3 });
+    this.app.renderer.background.color = backdrop;
+    const half = radius + MARGIN;
+    this.half = half;
+    g.rect(-half, -half, half * 2, half * 2).fill(bg);
+    if (patches) {
+      const r = rng(7);
+      for (let i = 0; i < 140; i++) {
+        const x = (r() * 2 - 1) * half, y = (r() * 2 - 1) * half;
+        const w = 40 + r() * 260, h = w * (0.4 + r() * 0.5);
+        g.ellipse(x, y, w, h).fill({ color: r() < 0.7 ? patches[0] : patches[1], alpha: 0.35 + r() * 0.3 });
+      }
     }
-    // fuera del radio cargado la arena se oscurece un poco
-    g.rect(-half, -half, half * 2, half * 2).fill({ color: SAND_DARK, alpha: 0.35 });
-    g.circle(0, 0, radius).cut();
-    g.circle(0, 0, radius).stroke({ color: SAND_DARK, width: 3, alpha: 0.7 });
+    this.islandMask.clear();
+    this.islandMask.rect(-half, -half, half * 2, half * 2).fill(0xffffff);
+    // sombra suave bajo la isla
+    const sh = this.islandShadow;
+    sh.clear();
+    const d = Math.max(10, half * 0.012);
+    sh.rect(-half + d * 0.6, -half + d, half * 2, half * 2).fill({ color: 0x000000, alpha: 0.10 });
+    sh.rect(-half + d * 1.4, -half + d * 2.2, half * 2, half * 2).fill({ color: 0x000000, alpha: 0.05 });
+    sh.rect(-half, -half, half * 2, half * 2).stroke({ color: 0xffffff, width: Math.max(2, half * 0.002), alpha: 0.7 });
   }
 
   get width(): number { return this.app.renderer.width / this.app.renderer.resolution; }
@@ -80,7 +98,7 @@ export class World {
   /** Limita la cámara para no perderse lejos de la ciudad. */
   clamp(radius: number): void {
     const c = this.toWorld(this.width / 2, this.height / 2);
-    const lim = radius + 300;
+    const lim = radius + MARGIN;
     const cx = Math.max(-lim, Math.min(lim, c.x)), cy = Math.max(-lim, Math.min(lim, c.y));
     if (cx !== c.x || cy !== c.y) this.centerOn({ x: cx, y: cy });
   }
