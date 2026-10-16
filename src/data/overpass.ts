@@ -20,6 +20,7 @@ export const OVERPASS_SERVERS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 
 export const HIGHWAY_CLASSES = [
@@ -99,7 +100,7 @@ export async function fetchOsm(
 ): Promise<OsmResponse> {
   const body = 'data=' + encodeURIComponent(query);
   const errors: string[] = [];
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     for (const server of OVERPASS_SERVERS) {
       if (signal?.aborted) throw new Error('cancelado');
       const host = new URL(server).host;
@@ -139,8 +140,12 @@ export async function fetchOsm(
         signal?.removeEventListener('abort', onAbort);
       }
     }
-    // breve pausa antes de la segunda vuelta
-    await new Promise(res => setTimeout(res, 3000));
+    // pausa creciente antes de la siguiente vuelta
+    await new Promise(res => setTimeout(res, 3000 + attempt * 6000));
+  }
+  // "Failed to fetch" en todos: la red no deja llegar (servidor saturado que responde sin cabeceras CORS, bloqueador, VPN…)
+  if (errors.every(e => /Failed to fetch|NetworkError|Load failed/i.test(e))) {
+    throw new Error('Los servidores de mapas de OpenStreetMap no responden ahora mismo (pasa en horas de mucho uso). Prueba de nuevo en unos minutos. Si usas un bloqueador de anuncios, VPN o datos móviles con ahorro de datos, desactívalo para esta web.');
   }
   throw new Error('No se pudo descargar el mapa. ' + errors.join(' · '));
 }
