@@ -71,7 +71,7 @@ export class Hud {
       <div id="topright">
         <button class="btn tool" id="summaryBtn" title="Resumen (R)">${ICONS.summary}</button>
         <button class="btn tool active" id="fichasBtn" title="Fichas de barrio (F)">${ICONS.fichas}</button>
-        <button class="btn tool" id="overlayBtn" title="Capas: flujos entre barrios / demanda sin cubrir / población (G)">${ICONS.overlay}</button>
+        <button class="btn tool" id="overlayBtn" title="Capas: demanda sin cubrir / población (G)">${ICONS.overlay}</button>
         <button class="btn tool" id="helpBtn" title="Ayuda (H)">${ICONS.help}</button>
         <button class="btn tool" id="menuBtn" title="Menú (Esc)">${ICONS.menu}</button>
       </div>
@@ -188,7 +188,6 @@ export class Hud {
     this.onOverlay(this.overlay);
     const tips: Record<Overlay, string> = {
       none: 'Capa: ninguna',
-      flows: 'Capa: los 10 flujos principales entre barrios (rojo = no pueden viajar) · clic en un barrio para ver solo los suyos',
       hexDemand: 'Capa: demanda sin cubrir por zona (vecinos que hoy no tuvieron parada o ruta)',
       hexPop: 'Capa: población y empleos por zona',
     };
@@ -327,6 +326,8 @@ export class Hud {
     const linesRows = s.lines.map(l => `<tr><td><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${hex(l.line.color)};margin-right:5px"></span>${l.line.name}</td><td>${l.line.vehicles.length}</td><td>${people(l.boarded)}</td><td>${eur(l.income)}</td><td>${eur(l.cost)}</td></tr>`).join('');
     const districts = g.demand.districts.list.slice().sort((a, b) => (b.unservedToday + b.waiting) - (a.unservedToday + a.waiting)).slice(0, 8);
     const districtRows = districts.map(d => `<tr><td><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${hex(d.color)};margin-right:5px"></span>${d.name}</td><td>${fmt(d.residents)}</td><td>${Math.round(d.coverage * 100)}%</td><td class="${d.unservedToday ? 'neg' : ''}">${people(d.unservedToday)}</td></tr>`).join('');
+    const dot = (c: number) => `<span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${hex(c)};margin-right:5px"></span>`;
+    const flowRows = g.demand.districts.topFlows(12).map(f => { const lost = f.trips ? Math.round((100 * f.unserved) / f.trips) : 0; return `<tr><td>${dot(f.from.color)}${f.from.name}</td><td>${dot(f.to.color)}${f.to.name}</td><td>${people(f.trips)}</td><td class="${lost >= 50 ? 'neg' : lost >= 20 ? '' : 'pos'}">${lost}%</td></tr>`; }).join('');
     const milestones = g.milestones.map(m => {
       const prog = g.milestoneProgress(m);
       const reward = [m.money ? `+${eur(m.money)}` : '', m.metro ? 'metro' : '', m.lines >= 99 ? 'líneas ilimitadas' : m.lines ? `+${m.lines} línea${m.lines > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
@@ -346,6 +347,7 @@ export class Hud {
       <div class="grid" style="margin-top:6px"><span>Llegaron</span><b data-v="delivered">${people(s.today.delivered)}</b><span>Se cansaron de esperar</span><b data-v="lost">${people(s.today.lost)}</b><span>Rechazan el precio</span><b data-v="rejected">${people(s.today.rejected)}</b><span>Sin parada o sin ruta</span><b data-v="unserved">${people(s.today.unserved)}</b><span>Viaje medio</span><b data-v="avgTrip">${s.today.avgTrip ? `${Math.round(s.today.avgTrip)} s` : '–'}</b></div>
       <h3>Barrios con más demanda sin cubrir</h3>
       <table><tr><th>barrio</th><th>hab</th><th>cobertura</th><th>sin servicio</th></tr>${districtRows}</table>
+      ${flowRows ? `<h3>Dónde quiere ir la gente</h3><table class="flows"><tr><th>entre</th><th>y</th><th>viajes</th><th>sin servicio</th></tr>${flowRows}</table><div class="muted" style="font-size:11px">Viajes de hoy entre barrios (ida y vuelta juntos, con los de ayer a la mitad).</div>` : ''}
       <h3>Oferta</h3>
       <div class="grid"><span>Paradas bus / estaciones</span><b>${s.stops.bus} / ${s.stops.metro}</b><span>Buses / trenes</span><b>${s.vehicles.bus} / ${s.vehicles.metro}</b><span>Plazas en circulación</span><b>${fmt(s.capacity * PEOPLE_PER_PASSENGER)}</b><span>Esperando ahora</span><b data-v="waiting">${people(s.waiting)}</b><span>A bordo ahora</span><b data-v="riding">${people(s.riding)}</b></div>
       <h3>Finanzas · modo ${GAME_MODES[g.mode].name.toLowerCase()}</h3>
@@ -513,7 +515,7 @@ export class Hud {
         <li><b>Paradas</b>: <kbd>B</kbd> pone una parada de bus junto a una calle; <kbd>M</kbd> una estación de metro donde quieras. Cada parada atrae a los vecinos que viven a unos minutos a pie.</li>
         <li><b>Líneas</b>: <kbd>L</kbd> (bus) o <kbd>K</kbd> (metro) y haz clic en las paradas por orden. El bus sigue las calles reales; el metro va en línea recta por túnel. Clic en la primera parada para cerrar un bucle; <kbd>Enter</kbd> para terminar.</li>
         <li>En el panel de la derecha añades <b>vehículos</b> a cada línea, la amplías, cambias su color o la borras. Con una línea seleccionada, <b>arrástrala</b> para llevarla por otra calle sin añadir paradas; sus puntos de paso se mueven arrastrándolos y se quitan con <kbd>D</kbd>.</li>
-        <li><kbd>G</kbd> alterna las <b>capas</b>: flujos principales entre barrios (clic en un barrio para ver solo los suyos), demanda sin cubrir por zona y población. <kbd>F</kbd> oculta o muestra las fichas de barrio.</li>
+        <li><kbd>G</kbd> alterna las <b>capas</b>: demanda sin cubrir por zona y población. En el resumen (<kbd>R</kbd>) hay una tabla con los trayectos entre barrios que más gente quiere hacer. <kbd>F</kbd> oculta o muestra las fichas de barrio.</li>
         <li><kbd>R</kbd> abre el <b>resumen</b>: demanda, barrios, oferta, finanzas, préstamos, precio del billete e hitos.</li>
         <li><b>Hitos</b>: empiezas con dos líneas de bus; al alcanzar cierta cantidad de viajeros desbloqueas más líneas, el metro y premios en dinero. En modo creativo todo está disponible desde el principio.</li>
         <li><b>Dinero</b>: cada viaje paga billete; cada vehículo cuesta mantenimiento diario. En modo fácil el ayuntamiento te subvenciona; en normal, cinco días seguidos en negativo y pierdes la concesión (hay préstamos).</li>

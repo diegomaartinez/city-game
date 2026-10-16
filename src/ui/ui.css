@@ -172,6 +172,7 @@ input[type=range] { flex: 1; accent-color: var(--blue); min-width: 120px; }
 #summary table { width: 100%; border-collapse: collapse; margin-top: 4px; }
 #summary td, #summary th { padding: 3px 4px; text-align: right; font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--border); font-size: 12px; }
 #summary td:first-child, #summary th:first-child { text-align: left; }
+#summary .flows td:nth-child(2), #summary .flows th:nth-child(2) { text-align: left; }
 #summary th { color: var(--muted); font-weight: 600; }
 .pos { color: var(--green); } .neg { color: var(--red); }
 

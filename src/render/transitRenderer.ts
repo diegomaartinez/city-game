@@ -8,9 +8,9 @@ import { INK, STYLES, type MapStyle } from './palette.ts';
 
 const LINE_WIDTH: Record<Mode, number> = { bus: 3.6, metro: 5.5 };
 
-/** Capas de demanda: flujos entre barrios, hexágonos de demanda sin cubrir, hexágonos de población. */
-export type Overlay = 'none' | 'flows' | 'hexDemand' | 'hexPop';
-export const OVERLAYS: Overlay[] = ['none', 'flows', 'hexDemand', 'hexPop'];
+/** Capas de demanda: hexágonos de demanda sin cubrir y hexágonos de población. */
+export type Overlay = 'none' | 'hexDemand' | 'hexPop';
+export const OVERLAYS: Overlay[] = ['none', 'hexDemand', 'hexPop'];
 
 const LABEL_STYLE = { fontFamily: 'Rubik Variable, system-ui, sans-serif', fontSize: 11, fontWeight: '800' } as const;
 
@@ -19,8 +19,6 @@ export class TransitRenderer {
   private stopsG = new Graphics();
   private queuesG = new Graphics();
   private markersG = new Graphics();
-  private flowLabels = new Map<number, Text>();
-  private flowsG = new Graphics();
   private hexG = new Graphics();
   private hexLabels = new Map<number, Text>();
   private hexLayer = new Container();
@@ -47,7 +45,7 @@ export class TransitRenderer {
     world.lines.addChild(this.linesG);
     world.stops.addChild(this.stopsG, this.queuesG, this.labelLayer);
     world.markers.addChild(this.markersG);
-    world.heat.addChild(this.hexLayer, this.flowsG);
+    world.heat.addChild(this.hexLayer);
     this.hexLayer.addChild(this.hexG);
     this.busTex = this.makeVehicleTexture(11, 3.2, false);
     this.metroTex = this.makeVehicleTexture(30, 3.6, true);
@@ -164,61 +162,15 @@ export class TransitRenderer {
     this.updateVehicles();
     this.drawMarkers(now);
     this.overlayTimer += dt;
-    if (this.overlay !== this.drawnOverlay) { this.overlayTimer = 9; this.drawnOverlay = this.overlay; this.flowsG.clear(); this.hexG.clear(); for (const l of this.hexLabels.values()) l.visible = false; for (const l of this.flowLabels.values()) l.visible = false; }
+    if (this.overlay !== this.drawnOverlay) { this.overlayTimer = 9; this.drawnOverlay = this.overlay; this.hexG.clear(); for (const l of this.hexLabels.values()) l.visible = false; }
     if (this.overlayTimer > 1) {
       this.overlayTimer = 0;
-      if (this.overlay === 'flows') this.drawFlows();
-      else if (this.overlay === 'hexDemand' || this.overlay === 'hexPop') this.drawHexes(this.overlay);
+      if (this.overlay === 'hexDemand' || this.overlay === 'hexPop') this.drawHexes(this.overlay);
     }
     if (this.overlay === 'hexDemand' || this.overlay === 'hexPop') {
       const sc = Math.max(0.5, 1 / z);
       const show = this.game.demand.hexR * z * 1.7 > 34;
       for (const l of this.hexLabels.values()) { if (l.visible) l.scale.set(sc); l.renderable = show; }
-    }
-  }
-
-  // ───────────── capa: flujos entre barrios ─────────────
-  /** Barrio del que se muestran los flujos (null = los principales de toda la ciudad). */
-  focusDistrict: number | null = null;
-
-  private drawFlows(): void {
-    const g = this.flowsG;
-    g.clear();
-    const k = this.k;
-    const D = this.game.demand.districts;
-    let flows = D.topFlows(400);
-    const focus = this.focusDistrict !== null ? D.list[this.focusDistrict] : null;
-    if (focus) flows = flows.filter(f => f.from === focus || f.to === focus);
-    flows = flows.slice(0, focus ? 8 : 10);
-    const seen = new Set<number>();
-    if (flows.length) {
-      const max = flows[0].trips;
-      for (const f of flows.slice().reverse()) {
-        const share = f.trips / max;
-        const w = (2 + 8 * Math.sqrt(share)) * k;
-        const lost = f.trips ? f.unserved / f.trips : 0;
-        const color = lerpColor(0x2f6fc4, 0xd23b33, lost);
-        g.moveTo(f.from.x, f.from.y).lineTo(f.to.x, f.to.y).stroke({ color: 0xffffff, width: w + 2.5 * k, alpha: 0.7, cap: 'round' });
-        g.moveTo(f.from.x, f.from.y).lineTo(f.to.x, f.to.y).stroke({ color, width: w, alpha: 0.75, cap: 'round' });
-        // cifra en el centro del trazo
-        const id = f.from.id * 1000 + f.to.id;
-        seen.add(id);
-        let label = this.flowLabels.get(id);
-        if (!label) { label = new Text({ text: '', style: { ...LABEL_STYLE, fontSize: 10, fill: this.ink } }); label.anchor.set(0.5); this.world.heat.addChild(label); this.flowLabels.set(id, label); }
-        const people = Math.round(f.trips * PEOPLE_PER_PASSENGER);
-        const txt = people >= 1000 ? `${(people / 1000).toFixed(1)}k` : String(people);
-        if (label.text !== txt) label.text = txt;
-        label.position.set((f.from.x + f.to.x) / 2, (f.from.y + f.to.y) / 2);
-        label.scale.set(Math.max(0.5, 1 / this.world.zoom));
-        label.visible = true;
-        const mx = (f.from.x + f.to.x) / 2, my = (f.from.y + f.to.y) / 2;
-        g.roundRect(mx - 11 * k, my - 6 * k, 22 * k, 12 * k, 4 * k).fill({ color: 0xffffff, alpha: 0.9 });
-      }
-    }
-    for (const [id, l] of this.flowLabels) if (!seen.has(id)) l.visible = false;
-    for (const d of D.list) {
-      const on = focus === d;
-      g.circle(d.x, d.y, (on ? 7 : 4) * k).fill(on ? 0x2b3440 : 0xffffff).stroke({ color: this.ink, width: 1.2 * k });
     }
   }
 

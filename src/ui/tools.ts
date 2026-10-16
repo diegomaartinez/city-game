@@ -279,16 +279,6 @@ export class Tools {
         const s = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
         if (s) { this.select(s.lines.length ? this.game.net.lines.get(s.lines[0]) ?? null : null, s); return; }
         const l = this.lineAt(w.x, w.y);
-        if (!l && this.transit.overlay === 'flows') {
-          // con la capa de flujos: clic en un barrio para ver solo los suyos, clic fuera para volver a los principales
-          const D = this.game.demand.districts;
-          const i = D.nearest(w.x, w.y), d = D.list[i];
-          const near = Math.hypot(d.x - w.x, d.y - w.y) < 40 * this.hitK;
-          this.transit.focusDistrict = near && this.transit.focusDistrict !== i ? i : null;
-          this.transit.refreshOverlay();
-          this.onHint(this.transit.focusDistrict !== null ? `Flujos de ${d.name} · clic fuera para ver los principales de la ciudad` : 'Flujos principales · clic en el centro de un barrio para ver solo los suyos');
-          return;
-        }
         this.select(l);
       }
     }
