@@ -49,7 +49,7 @@ export interface Landuse { kind: LanduseKind; poly: Pt[]; bbox: [number, number,
 export interface Zone { id: number; kind: LanduseKind; poly: Pt[]; area: number; cx: number; cy: number }
 
 /** Barrio o distrito con nombre (nodo place de OSM), para dar nombre a los barrios del juego. */
-export interface PlaceNode { name: string; kind: 'neighbourhood' | 'quarter' | 'suburb'; x: number; y: number }
+export interface PlaceNode { name: string; kind: 'neighbourhood' | 'quarter' | 'suburb' | 'town' | 'village'; x: number; y: number }
 
 export interface CityData {
   name: string;
@@ -59,6 +59,8 @@ export interface CityData {
   radius: number;
   /** Radio del núcleo con edificios; más allá solo hay zonas de uso del suelo y calles principales. */
   core: number;
+  /** Núcleo rectangular explícito [x0, y0, x1, y1] en metros (niveles prediseñados); si existe, sustituye a `core`. */
+  coreBox?: [number, number, number, number];
   roads: RoadWay[];
   buildings: Building[];
   areas: Area[];

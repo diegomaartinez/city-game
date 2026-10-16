@@ -37,9 +37,14 @@ export function bboxFilter(lat: number, lon: number, radius: number): string {
   return `(${(lat - dLat).toFixed(6)},${(lon - dLon).toFixed(6)},${(lat + dLat).toFixed(6)},${(lon + dLon).toFixed(6)})`;
 }
 
+/** Filtro bbox a partir de un rectángulo explícito (sur, oeste, norte, este). */
+export function bboxOf(south: number, west: number, north: number, east: number): string {
+  return `(${south.toFixed(6)},${west.toFixed(6)},${north.toFixed(6)},${east.toFixed(6)})`;
+}
+
 /** Consulta del núcleo detallado: todas las calles, edificios, parques y agua. */
-export function buildQuery(lat: number, lon: number, radius: number, coastRadius = radius): string {
-  const a = bboxFilter(lat, lon, radius);
+export function buildQuery(lat: number, lon: number, radius: number, coastRadius = radius, coreFilter?: string): string {
+  const a = coreFilter ?? bboxFilter(lat, lon, radius);
   return `[out:json][timeout:180];
 (
   way["highway"~"^(${HIGHWAY_CLASSES.join('|')})$"]${a};
@@ -53,7 +58,7 @@ export function buildQuery(lat: number, lon: number, radius: number, coastRadius
   way["waterway"="riverbank"]${a};
   way["amenity"~"^(hospital|school|police|fire_station|university|college)$"]${a};
   way["natural"="coastline"]${bboxFilter(lat, lon, coastRadius * 1.15 + 300)};
-  node["place"~"^(neighbourhood|quarter|suburb)$"]${a};
+  node["place"~"^(neighbourhood|quarter|suburb|town|village)$"]${a};
 );
 out geom;`;
 }
@@ -71,7 +76,7 @@ export function buildRingQuery(lat: number, lon: number, radius: number): string
   way["natural"~"^(water|wood)$"]${a};
   relation["natural"="water"]${a};
   way["waterway"="riverbank"]${a};
-  node["place"~"^(neighbourhood|quarter|suburb)$"]${a};
+  node["place"~"^(neighbourhood|quarter|suburb|town|village)$"]${a};
 );
 out geom;`;
 }

@@ -1,0 +1,49 @@
+# Construye los niveles (ciudades pre-descargadas de OpenStreetMap) y los sube al repo.
+# Se lanza a mano desde la pestaña Actions o al cambiar levels/levels.json.
+name: Construir niveles
+
+on:
+  workflow_dispatch:
+    inputs:
+      levels:
+        description: 'Ids de nivel a construir (vacío = los que falten)'
+        default: ''
+      force:
+        description: 'Reconstruir aunque existan'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ['levels/levels.json', 'scripts/build-levels.ts']
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: levels
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --experimental-transform-types scripts/build-levels.ts ${{ inputs.force && '--force' || '' }} ${{ inputs.levels }}
+      - name: Subir niveles al repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/levels
+          if git diff --cached --quiet; then echo "Sin cambios"; exit 0; fi
+          git commit -m "Niveles construidos desde OpenStreetMap"
+          git push
+          # el push del bot no dispara otros workflows: se lanza la publicación a mano
+          gh workflow run pages.yml --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}

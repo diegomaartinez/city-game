@@ -93,7 +93,7 @@ export class Districts {
   /** Barrios reales de OSM: cada nodo place es un centro; los que apenas tienen población se funden con el vecino. */
   private fromPlaces(points: WeightedPoint[], places: PlaceNode[]): District[] {
     // sin duplicados ni nombres repetidos; los barrios (neighbourhood) tienen prioridad sobre distritos (suburb)
-    const order = { neighbourhood: 0, quarter: 1, suburb: 2 };
+    const order: Record<PlaceNode['kind'], number> = { neighbourhood: 0, quarter: 1, suburb: 2, town: 3, village: 4 };
     const sorted = places.slice().sort((a, b) => order[a.kind] - order[b.kind]);
     const centers: Array<{ name: string; x: number; y: number }> = [];
     for (const p of sorted) {

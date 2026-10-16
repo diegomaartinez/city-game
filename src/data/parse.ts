@@ -91,9 +91,13 @@ function assembleRings(parts: LatLon[][]): LatLon[][] {
 
 export interface ParseStats { roads: number; buildings: number; areas: number; services: number }
 
-export function parseOsm(res: OsmResponse, name: string, lat: number, lon: number, radius: number): { city: CityData; stats: ParseStats } {
+export function parseOsm(res: OsmResponse, name: string, lat: number, lon: number, radius: number, coreBox?: [number, number, number, number]): { city: CityData; stats: ParseStats } {
   const proj = new Projection(lat, lon);
   const core = Math.min(radius, CORE_RADIUS);
+  // ¿cae un punto dentro del núcleo con edificios? (rectángulo explícito en los niveles, cuadrado por radio si no)
+  const inCore = coreBox
+    ? (x: number, y: number) => x > coreBox[0] + 150 && x < coreBox[2] - 150 && y > coreBox[1] + 150 && y < coreBox[3] - 150
+    : (x: number, y: number) => Math.max(Math.abs(x), Math.abs(y)) < core * 0.95;
   const toPoly = (g: LatLon[]): Pt[] => {
     const pts = g.map(p => proj.toXY(p.lat, p.lon));
     if (pts.length > 1) {
@@ -128,7 +132,7 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
   for (const el of res.elements as OsmElement[]) {
     const t = el.tags ?? {};
     if (el.type === 'node') {
-      if (t.name && el.lat !== undefined && el.lon !== undefined && (t.place === 'neighbourhood' || t.place === 'quarter' || t.place === 'suburb')) {
+      if (t.name && el.lat !== undefined && el.lon !== undefined && (t.place === 'neighbourhood' || t.place === 'quarter' || t.place === 'suburb' || t.place === 'town' || t.place === 'village')) {
         const p = proj.toXY(el.lat, el.lon);
         if (Math.abs(p.x) <= limit && Math.abs(p.y) <= limit) places.push({ name: t.name, kind: t.place, x: p.x, y: p.y });
       }
@@ -215,10 +219,10 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
     const area = polygonArea(lu.poly);
     if (area < 2000) continue;
     const c = centroid(lu.poly);
-    if (Math.max(Math.abs(c.x), Math.abs(c.y)) < core * 0.95) continue; // dentro del núcleo ya hay edificios
+    if (inCore(c.x, c.y)) continue; // dentro del núcleo ya hay edificios
     zones.push({ id: zones.length + 1, kind: lu.kind, poly: lu.poly, area, cx: c.x, cy: c.y });
   }
 
-  const city: CityData = { name, lat, lon, radius, core, roads, buildings, areas, zones, places, fetchedAt: Date.now(), version: CITY_VERSION };
+  const city: CityData = { name, lat, lon, radius, core, coreBox, roads, buildings, areas, zones, places, fetchedAt: Date.now(), version: CITY_VERSION };
   return { city, stats: { roads: roads.length, buildings: buildings.length, areas: areas.length, services } };
 }

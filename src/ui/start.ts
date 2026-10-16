@@ -1,20 +1,36 @@
-// Pantalla de inicio: buscar una ciudad, elegir el radio y descargar el mapa (o continuar una partida).
-import { cache, cityKey } from '../data/cache.ts';
-import { searchPlaces, type Place } from '../data/nominatim.ts';
-import { fetchCity } from '../data/overpass.ts';
-import { parseOsm } from '../data/parse.ts';
-import { CITY_VERSION, CORE_RADIUS, type CityData } from '../data/types.ts';
+// Pantalla de inicio: elegir un nivel (ciudad ya preparada), el modo de juego y continuar o empezar.
+import { cache } from '../data/cache.ts';
+import type { CityData } from '../data/types.ts';
 import { GAME_MODES, GAME_MODE_LIST, type GameMode, type SaveData } from '../sim/game.ts';
 
 export interface StartResult { city: CityData; key: string; mode: GameMode; save?: SaveData }
 
+/** Entrada del índice de niveles (public/levels/index.json, generado por scripts/build-levels.ts). */
+export interface LevelInfo { id: string; name: string; subtitle: string; radius: number; population: number; jobs: number; buildings: number; districts: number; file: string; bytes: number; version: number }
+
 const GAME_NAME = 'Little Transit';
+const LEVELS_URL = `${import.meta.env.BASE_URL}levels/`;
+
+const fmt = (n: number) => Math.round(n).toLocaleString('es-ES');
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
   if (html !== undefined) e.innerHTML = html;
   return e;
+}
+
+/** Descarga y descomprime un nivel (.json.gz). */
+export async function loadLevel(info: LevelInfo, onProgress?: (bytes: number) => void, signal?: AbortSignal): Promise<CityData> {
+  const r = await fetch(LEVELS_URL + info.file, { signal });
+  if (!r.ok || !r.body) throw new Error(`No se pudo cargar el nivel (HTTP ${r.status})`);
+  // cuenta los bytes que llegan para la barra de progreso
+  let got = 0;
+  const counted = r.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ transform(chunk, ctrl) { got += chunk.byteLength; onProgress?.(got); ctrl.enqueue(chunk); } }));
+  const stream = typeof DecompressionStream === 'function' ? counted.pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>) : counted;
+  const city = (await new Response(stream).json()) as CityData;
+  if (!city.roads?.length) throw new Error('El nivel está vacío o dañado');
+  return city;
 }
 
 export function showStart(): Promise<StartResult> {
@@ -24,35 +40,35 @@ export function showStart(): Promise<StartResult> {
     root.innerHTML = `
       <div class="panel card">
         <h1>Little <span>Transit</span></h1>
-        <p class="tagline">Elige una ciudad real y diseña su red de bus y metro. Sin prisas.</p>
-        <div class="search">
-          <input id="q" type="text" placeholder="Busca una ciudad… (Madrid, Lugo, Lisboa)" autocomplete="off" />
-          <ul class="results card hidden" id="results"></ul>
-        </div>
-        <div class="chosen" id="chosen">Escribe el nombre de una ciudad y elige un resultado.</div>
-        <div class="sizes" id="sizes">
-          <button class="btn size active" data-radius="3000"><b>Medio</b><small>3 km: el centro y todos sus edificios</small></button>
-          <button class="btn size" data-radius="10000"><b>Grande</b><small>10 km: área metropolitana, descarga más lenta</small></button>
-        </div>
-        <input id="radius" type="hidden" value="3000" />
-        <div class="modes" id="modes">${GAME_MODE_LIST.map(m => `<button class="btn mode ${m === 'facil' ? 'active' : ''}" data-mode="${m}"><b>${GAME_MODES[m].name}</b><small>${GAME_MODES[m].desc}</small></button>`).join('')}</div>
+        <p class="tagline">Diseña la red de bus y metro de una ciudad real. Sin prisas.</p>
+        <h3 class="label">Ciudad</h3>
+        <div class="levels" id="levels"><div class="muted">Cargando ciudades…</div></div>
+        <h3 class="label">Modo de juego</h3>
+        <div class="modes" id="modes">${GAME_MODE_LIST.map(m => `<button class="btn mode" data-mode="${m}"><b>${GAME_MODES[m].name}</b><small>${GAME_MODES[m].desc}</small></button>`).join('')}</div>
         <div class="row">
-          <button class="btn primary" id="go" disabled>Cargar ciudad</button>
-          <button class="btn small hidden" id="cancel">Cancelar</button>
+          <button class="btn primary" id="go" disabled>Jugar</button>
+          <button class="btn" id="restart" hidden>Empezar de nuevo</button>
         </div>
         <div class="progress" id="progress"></div>
         <div class="bar hidden" id="bar"><div></div></div>
-        <div class="saved hidden" id="saved"><h3>Tus ciudades</h3><ul></ul></div>
-        <p class="footnote">Datos del mapa © colaboradores de OpenStreetMap (ODbL). Se descargan una vez y se guardan en tu navegador.</p>
+        <p class="footnote">Datos del mapa © colaboradores de OpenStreetMap (ODbL). La partida se guarda en este navegador.</p>
       </div>`;
     document.body.appendChild(root);
 
-    const q = root.querySelector<HTMLInputElement>('#q')!;
-    const results = root.querySelector<HTMLUListElement>('#results')!;
-    const chosen = root.querySelector<HTMLDivElement>('#chosen')!;
-    const radius = root.querySelector<HTMLInputElement>('#radius')!;
-    const sizeButtons = [...root.querySelectorAll<HTMLButtonElement>('#sizes .size')];
+    const levelsBox = root.querySelector<HTMLDivElement>('#levels')!;
     const modeButtons = [...root.querySelectorAll<HTMLButtonElement>('#modes .mode')];
+    const go = root.querySelector<HTMLButtonElement>('#go')!;
+    const restart = root.querySelector<HTMLButtonElement>('#restart')!;
+    const progress = root.querySelector<HTMLDivElement>('#progress')!;
+    const bar = root.querySelector<HTMLDivElement>('#bar')!;
+    const barFill = bar.firstElementChild as HTMLDivElement;
+
+    let levels: LevelInfo[] = [];
+    let level: LevelInfo | null = null;
+    let save: SaveData | undefined;
+    const keyOf = (l: LevelInfo) => `level:${l.id}`;
+
+    // modo (se recuerda el último)
     let mode: GameMode = 'facil';
     try { const m = localStorage.getItem('lt-mode') as GameMode | null; if (m && GAME_MODES[m]) mode = m; } catch { /* sin almacenamiento */ }
     const setMode = (m: GameMode) => {
@@ -61,144 +77,69 @@ export function showStart(): Promise<StartResult> {
       try { localStorage.setItem('lt-mode', m); } catch { /* sin almacenamiento */ }
     };
     setMode(mode);
-    for (const b of modeButtons) b.onclick = () => setMode(b.dataset.mode as GameMode);
-    const go = root.querySelector<HTMLButtonElement>('#go')!;
-    const cancel = root.querySelector<HTMLButtonElement>('#cancel')!;
-    const progress = root.querySelector<HTMLDivElement>('#progress')!;
-    const bar = root.querySelector<HTMLDivElement>('#bar')!;
-    const barFill = bar.firstElementChild as HTMLDivElement;
-    const saved = root.querySelector<HTMLDivElement>('#saved')!;
-    const savedList = saved.querySelector('ul')!;
+    for (const b of modeButtons) b.onclick = () => { if (save) return; setMode(b.dataset.mode as GameMode); };
 
-    let place: Place | null = null;
-    let timer = 0;
-    let abort: AbortController | null = null;
-    let searchAbort: AbortController | null = null;
-
-    const fmtKm = (m: number) => (m / 1000).toLocaleString('es-ES', { maximumFractionDigits: 2 }) + ' km';
-    const setRadius = (r: number) => {
-      radius.value = String(r);
-      for (const b of sizeButtons) b.classList.toggle('active', +b.dataset.radius! === r);
+    const renderLevels = () => {
+      levelsBox.innerHTML = '';
+      for (const l of levels) {
+        const card = el('button', `btn level ${l === level ? 'active' : ''}`);
+        card.innerHTML = `<b>${l.name}</b><small>${l.subtitle}</small><span class="meta">${fmt(l.population)} habitantes · ${fmt(l.jobs)} empleos · ${(l.radius * 2 / 1000).toFixed(0)} km de lado · ${l.districts} barrios</span><span class="state" data-state></span>`;
+        card.onclick = () => void selectLevel(l);
+        levelsBox.appendChild(card);
+      }
     };
-    for (const b of sizeButtons) b.onclick = () => setRadius(+b.dataset.radius!);
 
-    const setPlace = (p: Place) => {
-      place = p;
-      chosen.innerHTML = `<b>${p.name}</b> · ${p.displayName}`;
+    const selectLevel = async (l: LevelInfo) => {
+      level = l;
+      try { localStorage.setItem('lt-level', l.id); } catch { /* sin almacenamiento */ }
+      save = await cache.getSave<SaveData>(keyOf(l)).catch(() => undefined);
+      renderLevels();
+      const state = levelsBox.querySelector<HTMLElement>('.level.active [data-state]');
+      if (state) state.textContent = save ? `Partida guardada: día ${Math.floor(save.minute / 1440) + 1} · modo ${GAME_MODES[save.mode ?? 'facil'].name.toLowerCase()}` : 'Sin empezar';
       go.disabled = false;
-      results.classList.add('hidden');
-      q.value = p.name;
-    };
-
-    q.oninput = () => {
-      clearTimeout(timer);
-      place = null; go.disabled = true;
-      const text = q.value.trim();
-      if (text.length < 2) { results.classList.add('hidden'); return; }
-      timer = window.setTimeout(async () => {
-        searchAbort?.abort();
-        searchAbort = new AbortController();
-        results.innerHTML = '<li class="muted">Buscando…</li>';
-        results.classList.remove('hidden');
-        try {
-          const list = await searchPlaces(text, 'es', searchAbort.signal);
-          results.innerHTML = '';
-          if (!list.length) { results.innerHTML = '<li>Sin resultados</li>'; return; }
-          for (const p of list) {
-            const li = el('li', '', `${p.name}<small>${p.displayName}</small>`);
-            li.onclick = () => setPlace(p);
-            results.appendChild(li);
-          }
-        } catch (e) {
-          if ((e as Error).name !== 'AbortError') results.innerHTML = '<li class="error">No se pudo buscar. ¿Hay conexión?</li>';
-        }
-      }, 450);
-    };
-    q.onkeydown = e => {
-      if (e.key === 'Enter') { const first = results.querySelector('li'); if (first && !results.classList.contains('hidden')) first.click(); }
-      if (e.key === 'Escape') results.classList.add('hidden');
+      go.textContent = save ? 'Continuar' : 'Jugar';
+      restart.hidden = !save;
+      // con partida guardada el modo es el de la partida
+      if (save) setMode(save.mode ?? 'facil');
+      for (const b of modeButtons) b.disabled = !!save;
     };
 
     const finish = (r: StartResult) => { root.remove(); resolve(r); };
 
-    const loadNew = async () => {
-      if (!place) return;
-      const p = place;
-      const rad = +radius.value;
-      const key = cityKey(p.lat, p.lon, rad);
-      go.disabled = true; q.disabled = true; for (const b of sizeButtons) b.disabled = true;
-      cancel.classList.remove('hidden');
+    const play = async () => {
+      if (!level) return;
+      const l = level;
+      go.disabled = true; restart.disabled = true;
       bar.classList.remove('hidden');
-      barFill.style.width = '2%';
-      abort = new AbortController();
+      barFill.style.width = '3%';
+      progress.textContent = 'Cargando el mapa…';
       try {
-        const cached = await cache.getCity(key);
-        if (cached && cached.version === CITY_VERSION) {
-          progress.textContent = 'Ya tenías este mapa guardado.';
-          const save = await cache.getSave<SaveData>(key);
-          finish({ city: cached, key, mode: save?.mode ?? mode, save });
-          return;
-        }
-        progress.textContent = 'Descargando… puede tardar unos segundos';
-        const res = await fetchCity(p.lat, p.lon, rad, CORE_RADIUS, pr => {
-          const base = pr.parts === 2 && pr.part === 2 ? 50 : 0;
-          const what = pr.parts === 2 && pr.part === 2 ? 'el área metropolitana' : 'el mapa';
-          if (pr.phase === 'connecting') progress.textContent = `Descargando ${what}… puede tardar unos segundos${pr.attempt ? ' (reintentando)' : ''}`;
-          else if (pr.phase === 'downloading') {
-            const mb = pr.bytes / 1e6;
-            progress.textContent = `Descargando ${what}… ${mb.toFixed(1)} MB`;
-            barFill.style.width = `${Math.min(base + 40, base + 5 + mb * 4)}%`;
-          } else progress.textContent = 'Preparando el mapa…';
-        }, abort.signal);
-        barFill.style.width = '95%';
-        await new Promise(r => setTimeout(r, 30));
-        const { city, stats } = parseOsm(res, p.name, p.lat, p.lon, rad);
-        if (!stats.roads) throw new Error('No hay calles en esa zona. Prueba con otro sitio.');
-        progress.textContent = `${stats.roads} calles, ${stats.buildings} edificios y ${stats.areas} zonas verdes. ¡Vamos!`;
+        const city = await loadLevel(l, bytes => { barFill.style.width = `${Math.min(90, 3 + (90 * bytes) / l.bytes)}%`; });
         barFill.style.width = '100%';
-        await cache.putCity(key, city).catch(() => undefined);
-        const save = await cache.getSave<SaveData>(key).catch(() => undefined);
-        finish({ city, key, mode: save?.mode ?? mode, save });
+        progress.textContent = '¡Vamos!';
+        finish({ city, key: keyOf(l), mode: save?.mode ?? mode, save });
       } catch (e) {
-        const msg = (e as Error).message;
-        progress.innerHTML = `<span class="error">${msg === 'cancelado' ? 'Cancelado.' : msg}</span>`;
+        progress.innerHTML = `<span class="error">${(e as Error).message}</span>`;
         bar.classList.add('hidden');
-        go.disabled = false; q.disabled = false; for (const b of sizeButtons) b.disabled = false;
-        cancel.classList.add('hidden');
+        go.disabled = false; restart.disabled = false;
       }
     };
-    go.onclick = loadNew;
-    cancel.onclick = () => abort?.abort();
+    go.onclick = play;
+    restart.onclick = async () => {
+      if (!level || !save) return;
+      if (!confirm(`¿Borrar la partida guardada de ${level.name} y empezar de nuevo?`)) return;
+      await cache.deleteSave(keyOf(level)).catch(() => undefined);
+      await selectLevel(level);
+    };
 
-    // ciudades ya descargadas
-    cache.listCities().then(async cities => {
-      if (!cities.length) return;
-      cities.sort((a, b) => b.fetchedAt - a.fetchedAt);
-      saved.classList.remove('hidden');
-      for (const c of cities) {
-        const key = cityKey(c.lat, c.lon, c.radius);
-        const save = await cache.getSave<SaveData>(key);
-        const li = el('li');
-        const info = save ? `día ${Math.floor(save.minute / 1440) + 1} · ${GAME_MODES[save.mode ?? 'facil'].name.toLowerCase()}` : 'sin empezar';
-        li.innerHTML = `<span><b>${c.name}</b> · ${fmtKm(c.radius)} · <small>${info}</small></span>`;
-        const play = el('button', 'btn small', save ? 'Continuar' : 'Jugar');
-        play.onclick = () => {
-          if (c.version === CITY_VERSION) { finish({ city: c, key, mode: save?.mode ?? mode, save }); return; }
-          // mapa guardado con un formato antiguo: se vuelve a descargar conservando la partida
-          place = { name: c.name, displayName: c.name, lat: c.lat, lon: c.lon, type: 'city' };
-          radius.value = String(c.radius);
-          chosen.innerHTML = `<b>${c.name}</b> · el mapa se actualizará al cargar`;
-          void loadNew();
-        };
-        const del = el('button', 'btn small', '✕');
-        del.title = 'Borrar';
-        del.onclick = async () => { await cache.deleteCity(key); await cache.deleteSave(key); li.remove(); if (!savedList.children.length) saved.classList.add('hidden'); };
-        li.append(play, del);
-        savedList.appendChild(li);
-      }
-    }).catch(() => undefined);
+    fetch(LEVELS_URL + 'index.json').then(r => r.json()).then(async (list: LevelInfo[]) => {
+      levels = list;
+      if (!levels.length) { levelsBox.innerHTML = '<div class="error">Aún no hay ciudades preparadas.</div>'; return; }
+      let last = levels[0];
+      try { const id = localStorage.getItem('lt-level'); const f = levels.find(l => l.id === id); if (f) last = f; } catch { /* sin almacenamiento */ }
+      await selectLevel(last);
+    }).catch(() => { levelsBox.innerHTML = '<div class="error">No se pudo cargar la lista de ciudades. ¿Hay conexión?</div>'; });
 
     document.title = GAME_NAME;
-    q.focus();
   });
 }

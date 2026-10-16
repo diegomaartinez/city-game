@@ -1,6 +1,6 @@
 # Little Transit
 
-**Diseña el transporte de ciudades de verdad, sin prisas.** Busca una ciudad (Madrid, Lugo, Lisboa…), el juego descarga sus calles y edificios reales de OpenStreetMap y, a partir de ahí, los vecinos quieren moverse: pon paradas, traza líneas de bus y metro, añade vehículos y consigue que lleguen a tiempo. Al estilo de *Mini Metro*, pero sobre el plano real.
+**Diseña el transporte de ciudades de verdad, sin prisas.** Elige una ciudad preparada (de momento A Coruña y su área metropolitana) con sus calles y edificios reales de OpenStreetMap y, a partir de ahí, los vecinos quieren moverse: pon paradas, traza líneas de bus y metro, añade vehículos y consigue que lleguen a tiempo. Al estilo de *Mini Metro*, pero sobre el plano real.
 
 **Juega en el navegador:** https://diegomaartinez.github.io/city-game/ (se publica solo desde `main` con GitHub Actions).
 
@@ -14,7 +14,7 @@ Estilo propio de plano de transporte: ciudad discreta sobre papel claro y las l�
 - **Líneas**: elige bus o metro y haz clic en las paradas por orden. El **bus** recorre las calles reales (respeta los sentidos únicos cuando puede); el **metro** une estaciones en línea recta por túnel, que se paga por metro. Clic en la primera parada para cerrar un bucle; si no, la línea va y vuelve.
 - **Recorrido**: con una línea seleccionada, arrástrala para llevarla por donde quieras sin añadir paradas (puntos de paso que se mueven y se quitan con `D`).
 - **Vehículos**: cada línea arranca con uno; añade más desde el panel. Tienen capacidad y velocidad distintas y cuestan mantenimiento diario.
-- **Tamaño del mapa**: *Medio* (3 km, el centro con todos sus edificios) o *Grande* (10 km, área metropolitana). En el grande, más allá de 3 km solo hay calles principales y zonas de uso del suelo (residencial, comercial, industrial), que generan viajeros según su superficie. El mapa jugable es un cuadrado que flota sobre el fondo.
+- **Ciudades (niveles)**: cada ciudad viene ya preparada en `public/levels/` (un `.json.gz` por nivel más `index.json`), así que carga al instante sin depender de Overpass. El núcleo urbano tiene todos sus edificios; en el resto del área metropolitana hay calles principales y zonas de uso del suelo (residencial, comercial, industrial) que generan viajeros según su superficie. El mapa jugable es un cuadrado que flota sobre el fondo.
 - **Barrios**: la ciudad se divide en barrios (los de OSM si tienen nombre; si no, por cercanía) y cada uno lleva una ficha con habitantes, empleos y vecinos sin servicio hoy (`F` las oculta). Los vecinos que quieren viajar y no tienen parada cerca se acumulan como siluetas en su barrio: ahí hace falta una parada. Cada viajero que espera lleva el color del barrio al que va.
 - **Viajeros**: esperan en las paradas, hacen transbordo si hace falta y se van si esperan demasiado. `G` alterna las capas: flujos entre barrios (arcos; rojo = no pueden viajar), demanda sin cubrir por hexágono y población/empleos por hexágono.
 - **Modos de juego**: *Fácil* (subvención municipal diaria y el ayuntamiento cubre los descubiertos), *Normal* (balance real: cinco días seguidos en negativo y pierdes la concesión; hay préstamos al 0,4 % diario) y *Creativo* (dinero infinito y todo desbloqueado; el objetivo es mover al máximo de viajeros).
@@ -42,7 +42,8 @@ npm run build    # comprueba tipos y genera dist/
 ```
 
 - **Vite + TypeScript + PixiJS 8** (WebGL). Sin motor de juego: el mapa se dibuja con `Graphics` por capas y teselas, y solo se renderizan las teselas visibles.
-- **Datos** (`src/data/`): [Nominatim](https://nominatim.org/) para buscar la ciudad y la [API Overpass](https://overpass-api.de/) para calles (con puentes y túneles), edificios, parques, agua y línea de costa, con varios servidores de respaldo. Todo se proyecta a metros alrededor del centro (`geo.ts`), el mar se cierra a partir de la costa (`coast.ts`) y se guarda en IndexedDB (`cache.ts`).
+- **Datos** (`src/data/`): la [API Overpass](https://overpass-api.de/) para calles (con puentes y túneles), edificios, parques, agua, línea de costa y barrios. Todo se proyecta a metros alrededor del centro (`geo.ts`) y el mar se cierra a partir de la costa (`coast.ts`). Las partidas se guardan en IndexedDB (`cache.ts`).
+- **Niveles**: `levels/levels.json` define cada ciudad (centro, lado del cuadrado y rectángulo del núcleo con edificios). `scripts/build-levels.ts` la descarga y empaqueta en `public/levels/`; el workflow *Construir niveles* lo ejecuta en GitHub Actions (a mano desde la pestaña Actions, o al cambiar `levels.json`) y sube el resultado al repo. Para añadir una ciudad basta con añadirla a `levels.json`.
 - **Simulación** (`src/sim/`): grafo de calles con A* (`graph.ts`), red de transporte con paradas, líneas, vehículos y planificación de viajes con transbordos (`transit.ts`), generación de demanda a partir de los edificios, con cuentas por barrio y por hexágono (`demand.ts`), barrios por nodos `place` de OSM o k-medias (`districts.ts`) y estado de la partida, modos, hitos, préstamos e informes (`game.ts`).
 - **Render** (`src/render/`) e **interfaz** (`src/ui/`, DOM encima del canvas).
 
