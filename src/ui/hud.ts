@@ -188,7 +188,7 @@ export class Hud {
     this.onOverlay(this.overlay);
     const tips: Record<Overlay, string> = {
       none: 'Capa: ninguna',
-      flows: 'Capa: flujos entre barrios (grosor = cuánta gente quiere ir; rojo = no puede)',
+      flows: 'Capa: los 10 flujos principales entre barrios (rojo = no pueden viajar) · clic en un barrio para ver solo los suyos',
       hexDemand: 'Capa: demanda sin cubrir por zona (vecinos que hoy no tuvieron parada o ruta)',
       hexPop: 'Capa: población y empleos por zona',
     };
@@ -509,11 +509,11 @@ export class Hud {
     const m = this.modal(`<h2>Cómo se juega</h2>
       <p>La ciudad es de verdad. Cada punto que ves esperando representa a ${PEOPLE_PER_PASSENGER} personas; cuántas salen de cada edificio depende de su tamaño y sus plantas. Van de casa al trabajo, las tiendas y los equipamientos, y vuelven por la tarde.</p>
       <ul>
-        <li><b>Barrios</b>: cada ficha muestra sus habitantes y empleos. Las siluetas coral que se acumulan en un barrio son vecinos que quieren viajar y no tienen parada cerca: ahí hace falta una. Cada viajero que espera en una parada lleva el <b>color del barrio</b> al que va (pasa el ratón por la parada para verlo).</li>
+        <li><b>Barrios</b>: cada ficha muestra sus habitantes y empleos. El círculo coral que crece bajo un barrio son vecinos que quieren viajar y no tienen parada cerca: ahí hace falta una. Cada viajero que espera en una parada lleva el <b>color del barrio</b> al que va (pasa el ratón por la parada para verlo).</li>
         <li><b>Paradas</b>: <kbd>B</kbd> pone una parada de bus junto a una calle; <kbd>M</kbd> una estación de metro donde quieras. Cada parada atrae a los vecinos que viven a unos minutos a pie.</li>
         <li><b>Líneas</b>: <kbd>L</kbd> (bus) o <kbd>K</kbd> (metro) y haz clic en las paradas por orden. El bus sigue las calles reales; el metro va en línea recta por túnel. Clic en la primera parada para cerrar un bucle; <kbd>Enter</kbd> para terminar.</li>
         <li>En el panel de la derecha añades <b>vehículos</b> a cada línea, la amplías, cambias su color o la borras. Con una línea seleccionada, <b>arrástrala</b> para llevarla por otra calle sin añadir paradas; sus puntos de paso se mueven arrastrándolos y se quitan con <kbd>D</kbd>.</li>
-        <li><kbd>G</kbd> alterna las <b>capas</b>: flujos entre barrios (por dónde quiere moverse la gente), demanda sin cubrir por zona y población. <kbd>F</kbd> oculta o muestra las fichas de barrio.</li>
+        <li><kbd>G</kbd> alterna las <b>capas</b>: flujos principales entre barrios (clic en un barrio para ver solo los suyos), demanda sin cubrir por zona y población. <kbd>F</kbd> oculta o muestra las fichas de barrio.</li>
         <li><kbd>R</kbd> abre el <b>resumen</b>: demanda, barrios, oferta, finanzas, préstamos, precio del billete e hitos.</li>
         <li><b>Hitos</b>: empiezas con dos líneas de bus; al alcanzar cierta cantidad de viajeros desbloqueas más líneas, el metro y premios en dinero. En modo creativo todo está disponible desde el principio.</li>
         <li><b>Dinero</b>: cada viaje paga billete; cada vehículo cuesta mantenimiento diario. En modo fácil el ayuntamiento te subvenciona; en normal, cinco días seguidos en negativo y pierdes la concesión (hay préstamos).</li>

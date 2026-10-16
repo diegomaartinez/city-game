@@ -172,7 +172,7 @@ input[type=range] { flex: 1; accent-color: var(--blue); min-width: 120px; }
 #info { position: absolute; left: 10px; bottom: 14px; padding: 8px 12px; font-size: 13px; min-width: 160px; max-width: 280px; }
 #info b { font-size: 14px; }
 
-#toasts { position: absolute; top: 112px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; }
+#toasts { position: absolute; top: var(--hud-top, 112px); left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; }
 .toast { padding: 6px 14px; font-size: 13px; font-weight: 600; animation: toast 4.5s forwards; }
 .toast.warn { background: #fde8e6; border-color: #f3c2bd; } .toast.good { background: #e6f3e8; border-color: #bfdcc5; }
 @keyframes toast { 0% { opacity: 0; transform: translateY(-6px); } 8% { opacity: 1; transform: none; } 85% { opacity: 1; } 100% { opacity: 0; } }

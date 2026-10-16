@@ -21,6 +21,7 @@ export class TransitRenderer {
   private markersG = new Graphics();
   private waitingG = new Graphics();
   private waitingLabels = new Map<number, Text>();
+  private flowLabels = new Map<number, Text>();
   private flowsG = new Graphics();
   private hexG = new Graphics();
   private hexLabels = new Map<number, Text>();
@@ -156,6 +157,9 @@ export class TransitRenderer {
     }
   }
 
+  /** Vuelve a dibujar la capa activa en el siguiente frame. */
+  refreshOverlay(): void { this.overlayTimer = 9; }
+
   // ───────────── por frame ─────────────
   update(dt: number, now: number): void {
     const z = this.world.zoom;
@@ -166,7 +170,7 @@ export class TransitRenderer {
     this.waitingTimer += dt;
     if (this.waitingTimer > 0.25 || Math.abs(z - this.waitingZoom) / this.waitingZoom > 0.05) { this.waitingTimer = 0; this.waitingZoom = z; this.drawWaiting(); }
     this.overlayTimer += dt;
-    if (this.overlay !== this.drawnOverlay) { this.overlayTimer = 9; this.drawnOverlay = this.overlay; this.flowsG.clear(); this.hexG.clear(); for (const l of this.hexLabels.values()) l.visible = false; }
+    if (this.overlay !== this.drawnOverlay) { this.overlayTimer = 9; this.drawnOverlay = this.overlay; this.flowsG.clear(); this.hexG.clear(); for (const l of this.hexLabels.values()) l.visible = false; for (const l of this.flowLabels.values()) l.visible = false; }
     if (this.overlayTimer > 1) {
       this.overlayTimer = 0;
       if (this.overlay === 'flows') this.drawFlows();
@@ -187,48 +191,69 @@ export class TransitRenderer {
     const k = Math.max(1, 2.4 / zoom);
     const seen = new Set<number>();
     for (const d of this.game.demand.districts.list) {
-      if (d.waiting < 1) continue;
+      if (d.waiting < 2) continue;
       seen.add(d.id);
-      const n = Math.min(21, Math.round(d.waiting));
-      // siluetas en filas bajo el centro del barrio
-      const cols = Math.min(7, n);
-      const sx = 5.2 * k, sy = 7.5 * k;
-      const x0 = d.x - ((cols - 1) * sx) / 2, y0 = d.y + 9 * k;
-      for (let i = 0; i < n; i++) {
-        const cx = x0 + (i % cols) * sx + (Math.floor(i / cols) % 2) * sx * 0.5, cy = y0 + Math.floor(i / cols) * sy;
-        g.circle(cx, cy - 2.6 * k, 1.6 * k).fill(0xd9655c);
-        g.roundRect(cx - 1.7 * k, cy - 0.8 * k, 3.4 * k, 4.6 * k, 1.2 * k).fill(0xe88a82);
-      }
+      // un solo indicador por barrio: disco coral que crece con la gente que espera, con una silueta dentro
+      const r = (6 + Math.min(8, Math.sqrt(d.waiting) * 1.4)) * k;
+      const cx = d.x, cy = d.y + (8 + r / k) * k;
+      g.circle(cx, cy, r + 1.5 * k).fill({ color: 0xffffff, alpha: 0.7 });
+      g.circle(cx, cy, r).fill(0xe88a82);
+      g.circle(cx, cy - r * 0.3, r * 0.22).fill(0xffffff);
+      g.roundRect(cx - r * 0.3, cy - r * 0.02, r * 0.6, r * 0.62, r * 0.2).fill(0xffffff);
       let label = this.waitingLabels.get(d.id);
       if (!label) { label = new Text({ text: '', style: { ...LABEL_STYLE, fontSize: 10, fill: 0xd23b33 } }); label.anchor.set(0.5, 0); this.world.markers.addChild(label); this.waitingLabels.set(d.id, label); }
       const txt = `${(Math.round(d.waiting) * PEOPLE_PER_PASSENGER).toLocaleString('es-ES')} esperan`;
       if (label.text !== txt) label.text = txt;
-      label.position.set(d.x, y0 + (Math.ceil(n / cols)) * sy + 1 * k);
+      label.position.set(cx, cy + r + 1.5 * k);
       label.scale.set(Math.max(0.5, 1 / zoom));
-      label.visible = d.waiting >= 3;
+      label.visible = true;
     }
     for (const [id, l] of this.waitingLabels) if (!seen.has(id)) l.visible = false;
   }
 
   // ───────────── capa: flujos entre barrios ─────────────
+  /** Barrio del que se muestran los flujos (null = los principales de toda la ciudad). */
+  focusDistrict: number | null = null;
+
   private drawFlows(): void {
     const g = this.flowsG;
     g.clear();
     const k = this.k;
-    const flows = this.game.demand.districts.topFlows(70);
-    if (!flows.length) return;
-    const max = flows[0].trips;
-    for (const f of flows.slice().reverse()) {
-      const share = f.trips / max;
-      const w = (1.5 + 9 * Math.sqrt(share)) * k;
-      const lost = f.trips ? f.unserved / f.trips : 0;
-      const color = lerpColor(0x2f6fc4, 0xd23b33, lost);
-      const dx = f.to.x - f.from.x, dy = f.to.y - f.from.y, len = Math.hypot(dx, dy) || 1;
-      const cx = (f.from.x + f.to.x) / 2 - (dy / len) * len * 0.12, cy = (f.from.y + f.to.y) / 2 + (dx / len) * len * 0.12;
-      g.moveTo(f.from.x, f.from.y).quadraticCurveTo(cx, cy, f.to.x, f.to.y).stroke({ color: 0xffffff, width: w + 2 * k, alpha: 0.5, cap: 'round' });
-      g.moveTo(f.from.x, f.from.y).quadraticCurveTo(cx, cy, f.to.x, f.to.y).stroke({ color, width: w, alpha: 0.35 + 0.4 * share, cap: 'round' });
+    const D = this.game.demand.districts;
+    let flows = D.topFlows(400);
+    const focus = this.focusDistrict !== null ? D.list[this.focusDistrict] : null;
+    if (focus) flows = flows.filter(f => f.from === focus || f.to === focus);
+    flows = flows.slice(0, focus ? 8 : 10);
+    const seen = new Set<number>();
+    if (flows.length) {
+      const max = flows[0].trips;
+      for (const f of flows.slice().reverse()) {
+        const share = f.trips / max;
+        const w = (2 + 8 * Math.sqrt(share)) * k;
+        const lost = f.trips ? f.unserved / f.trips : 0;
+        const color = lerpColor(0x2f6fc4, 0xd23b33, lost);
+        g.moveTo(f.from.x, f.from.y).lineTo(f.to.x, f.to.y).stroke({ color: 0xffffff, width: w + 2.5 * k, alpha: 0.7, cap: 'round' });
+        g.moveTo(f.from.x, f.from.y).lineTo(f.to.x, f.to.y).stroke({ color, width: w, alpha: 0.75, cap: 'round' });
+        // cifra en el centro del trazo
+        const id = f.from.id * 1000 + f.to.id;
+        seen.add(id);
+        let label = this.flowLabels.get(id);
+        if (!label) { label = new Text({ text: '', style: { ...LABEL_STYLE, fontSize: 10, fill: this.ink } }); label.anchor.set(0.5); this.world.heat.addChild(label); this.flowLabels.set(id, label); }
+        const people = Math.round(f.trips * PEOPLE_PER_PASSENGER);
+        const txt = people >= 1000 ? `${(people / 1000).toFixed(1)}k` : String(people);
+        if (label.text !== txt) label.text = txt;
+        label.position.set((f.from.x + f.to.x) / 2, (f.from.y + f.to.y) / 2);
+        label.scale.set(Math.max(0.5, 1 / this.world.zoom));
+        label.visible = true;
+        const mx = (f.from.x + f.to.x) / 2, my = (f.from.y + f.to.y) / 2;
+        g.roundRect(mx - 11 * k, my - 6 * k, 22 * k, 12 * k, 4 * k).fill({ color: 0xffffff, alpha: 0.9 });
+      }
     }
-    for (const d of this.game.demand.districts.list) g.circle(d.x, d.y, 4 * k).fill(0xffffff).stroke({ color: this.ink, width: 1.2 * k });
+    for (const [id, l] of this.flowLabels) if (!seen.has(id)) l.visible = false;
+    for (const d of D.list) {
+      const on = focus === d;
+      g.circle(d.x, d.y, (on ? 7 : 4) * k).fill(on ? 0x2b3440 : 0xffffff).stroke({ color: this.ink, width: 1.2 * k });
+    }
   }
 
   // ───────────── capa: hexágonos ─────────────
