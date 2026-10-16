@@ -1,8 +1,10 @@
-// HUD: barra de estado, herramientas, panel de líneas, resumen (demanda, oferta, finanzas, precios),
-// mensajes, informe diario, menú (con estilo de mapa) y ayuda.
-import type { DayReport, Game } from '../sim/game.ts';
+// HUD: barra de estado, herramientas, panel de líneas, resumen (demanda, oferta, finanzas, préstamos,
+// precios, barrios, hitos), fichas de barrio sobre el mapa, mensajes, informe diario, menú y ayuda.
+import { GAME_MODES, LOAN_STEP, MAX_DEBT, type DayReport, type Game, type Milestone } from '../sim/game.ts';
 import { LINE_COLORS, MODE, PEOPLE_PER_PASSENGER, type Line, type Mode, type Stop } from '../sim/transit.ts';
 import { MAP_STYLES, type MapStyle } from '../render/palette.ts';
+import { OVERLAYS, type Overlay } from '../render/transitRenderer.ts';
+import type { World } from '../render/world.ts';
 import type { Hover, Tool, Tools } from './tools.ts';
 
 const ICONS: Record<string, string> = {
@@ -12,42 +14,52 @@ const ICONS: Record<string, string> = {
   'line:bus': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 18c4 0 4-12 8-12s4 12 8 12" stroke="#d23b33" stroke-width="3"/><circle cx="4" cy="18" r="2.5" fill="#fff"/><circle cx="12" cy="6" r="2.5" fill="#fff"/><circle cx="20" cy="18" r="2.5" fill="#fff"/></svg>',
   'line:metro': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 18L12 6l8 12" stroke="#2f6fc4" stroke-width="3.5"/><circle cx="4" cy="18" r="2.8" fill="#ffffff"/><circle cx="12" cy="6" r="2.8" fill="#ffffff"/><circle cx="20" cy="18" r="2.8" fill="#ffffff"/></svg>',
   remove: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7" fill="#fff"/><path d="M8 8l8 8M16 8l-8 8" stroke="#d23b33"/></svg>',
-  overlay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8" fill="#e88a82" opacity=".5"/><circle cx="12" cy="12" r="4" fill="#d23b33"/></svg>',
+  overlay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z" fill="#e88a82" opacity=".55"/><path d="M12 8l3.5 2v4L12 16l-3.5-2v-4z" fill="#d23b33"/></svg>',
+  fichas: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="11" rx="2.5" fill="#fff"/><path d="M7 9h10M7 12.5h6"/><path d="M12 16v4"/></svg>',
   summary: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>',
   menu: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
   help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="#fff" stroke="#2b3440" stroke-width="2"><rect x="5" y="10" width="14" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none"/></svg>',
 };
 
 const fmt = (n: number) => Math.round(n).toLocaleString('es-ES');
-const eur = (n: number) => fmt(n) + ' €';
+const eur = (n: number) => (Number.isFinite(n) ? fmt(n) + ' €' : '∞');
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 const people = (dots: number) => fmt(dots * PEOPLE_PER_PASSENGER);
+const signed = (n: number) => (n >= 0 ? '+' : '') + eur(n);
 
 export class Hud {
   readonly root = document.createElement('div');
   speed = 1;
   onSpeed: (s: number) => void = () => undefined;
-  onMenu: (action: 'save' | 'exit') => void = () => undefined;
-  onOverlay: (mode: 'none' | 'demand' | 'population') => void = () => undefined;
+  onMenu: (action: 'save' | 'exit' | 'creative') => void = () => undefined;
+  onOverlay: (mode: Overlay) => void = () => undefined;
   onStyle: (style: MapStyle) => void = () => undefined;
   style: MapStyle = 'plano';
-  private overlay: 'none' | 'demand' | 'population' = 'none';
+  private overlay: Overlay = 'none';
+  private fichasOn = true;
   private els: Record<string, HTMLElement> = {};
   private toolButtons = new Map<string, HTMLButtonElement>();
+  private fichas = new Map<number, HTMLElement>();
   private panelStop: Stop | null = null;
   private summaryOpen = false;
+  private goalTop = -1;
 
-  constructor(private game: Game, private tools: Tools) {
+  constructor(private game: Game, private tools: Tools, private world: World) {
     this.root.id = 'hud';
+    const creative = game.creative;
     this.root.innerHTML = `
+      <div id="districts"></div>
       <div id="topbar" class="card">
         <span class="city" id="cityName"></span>
         <div class="stat"><b id="clock"></b><small id="dayLabel">día 1</small></div>
-        <div class="stat"><b id="money"></b><small>dinero</small></div>
+        <div class="stat ${creative ? 'hidden' : ''}"><b id="money"></b><small>dinero</small></div>
+        <div class="stat ${creative ? 'hidden' : ''}"><b id="net"></b><small>balance hoy</small></div>
         <div class="stat"><b id="delivered"></b><small>viajeros hoy</small></div>
-        <div class="stat"><b id="riding"></b><small>a bordo</small></div>
-        <div class="stat"><b id="waiting"></b><small>esperando</small></div>
-        <div class="stat"><b id="satis"></b><small>llegan</small></div>
+        <div class="stat"><b id="total"></b><small>en total</small></div>
+        <div class="stat opt"><b id="riding"></b><small>a bordo</small></div>
+        <div class="stat opt"><b id="waiting"></b><small>esperando</small></div>
+        <div class="stat opt"><b id="satis"></b><small>llegan</small></div>
         <div id="speed">
           <button class="btn" data-speed="0" title="Pausa (espacio)">⏸</button>
           <button class="btn active" data-speed="1" title="Velocidad normal">▶</button>
@@ -55,39 +67,61 @@ export class Hud {
           <button class="btn" data-speed="4" title="Muy rápido (3)">▶▶▶</button>
         </div>
       </div>
+      <div id="goal" class="card ${creative ? 'hidden' : ''}"><span id="goalText"></span><div class="bar"><div id="goalBar"></div></div></div>
       <div id="topright">
         <button class="btn tool" id="summaryBtn" title="Resumen (R)">${ICONS.summary}</button>
-        <button class="btn tool" id="overlayBtn" title="Capas: demanda sin cubrir / población (G)">${ICONS.overlay}</button>
+        <button class="btn tool active" id="fichasBtn" title="Fichas de barrio (F)">${ICONS.fichas}</button>
+        <button class="btn tool" id="overlayBtn" title="Capas: flujos entre barrios / demanda sin cubrir / población (G)">${ICONS.overlay}</button>
         <button class="btn tool" id="helpBtn" title="Ayuda (H)">${ICONS.help}</button>
         <button class="btn tool" id="menuBtn" title="Menú (Esc)">${ICONS.menu}</button>
       </div>
       <div id="toolbar" class="card"></div>
       <div id="panel" class="card hidden"></div>
       <div id="summary" class="card hidden"></div>
+      <div id="actions" class="hidden">
+        <button class="btn primary" id="finishLine">Terminar línea</button>
+        <button class="btn" id="cancelLine">Quitar última</button>
+      </div>
       <div id="hint" class="card"></div>
       <div id="info" class="card hidden"></div>
       <div id="toasts"></div>`;
     document.body.appendChild(this.root);
-    for (const id of ['cityName', 'clock', 'dayLabel', 'money', 'delivered', 'riding', 'waiting', 'satis', 'hint', 'info', 'toasts', 'panel', 'summary']) this.els[id] = this.root.querySelector('#' + id)!;
+    for (const id of ['districts', 'cityName', 'clock', 'dayLabel', 'money', 'net', 'delivered', 'total', 'riding', 'waiting', 'satis', 'goal', 'goalText', 'goalBar', 'hint', 'info', 'toasts', 'panel', 'summary']) this.els[id] = this.root.querySelector('#' + id)!;
     this.els.cityName.textContent = game.data.name;
     this.buildToolbar();
+    this.buildFichas();
+    try { this.fichasOn = localStorage.getItem('lt-fichas') !== '0'; } catch { /* sin almacenamiento */ }
+    this.applyFichas();
 
     this.root.querySelectorAll<HTMLButtonElement>('#speed .btn').forEach(b => { b.onclick = () => this.setSpeed(+b.dataset.speed!); });
     (this.root.querySelector('#menuBtn') as HTMLButtonElement).onclick = () => this.openMenu();
     (this.root.querySelector('#helpBtn') as HTMLButtonElement).onclick = () => this.openHelp();
     (this.root.querySelector('#summaryBtn') as HTMLButtonElement).onclick = () => this.toggleSummary();
     (this.root.querySelector('#overlayBtn') as HTMLButtonElement).onclick = () => this.cycleOverlay();
+    (this.root.querySelector('#fichasBtn') as HTMLButtonElement).onclick = () => this.toggleFichas();
+    this.els.goal.onclick = () => { if (!this.summaryOpen) this.toggleSummary(); };
 
-    game.on('money', m => { this.els.money.textContent = eur(m); });
+    game.on('money', m => { this.els.money.textContent = eur(m); this.els.money.classList.toggle('neg', m < 0); });
     game.on('message', (t, k) => this.toast(t, k));
-    game.on('network', () => { this.renderPanel(); if (this.summaryOpen) this.renderSummary(); });
+    game.on('network', () => { this.renderPanel(); this.updateLocks(); if (this.summaryOpen) this.renderSummary(); });
     game.on('day', r => this.dayReport(r));
-    tools.onToolChange = t => this.markTool(t);
+    game.on('milestone', m => this.milestone(m));
+    game.on('gameover', reason => this.gameOver(reason));
+    tools.onToolChange = t => { this.markTool(t); this.root.querySelector('#actions')!.classList.toggle('hidden', t !== 'line'); };
+    (this.root.querySelector('#finishLine') as HTMLButtonElement).onclick = () => { tools.finishLine(); tools.setTool('pan'); };
+    (this.root.querySelector('#cancelLine') as HTMLButtonElement).onclick = () => {
+      const l = tools.editing;
+      if (!l) return;
+      const last = l.stops[l.stops.length - 1];
+      if (last !== undefined) { game.removeStopFromLine(l, last); if (!game.net.lines.has(l.id)) { tools.editing = null; tools.setTool('pan'); return; } }
+      tools.onHint(tools.hintFor('line'));
+    };
     tools.onHint = t => { this.els.hint.textContent = t; };
     tools.onHover = h => this.showHover(h);
     tools.onSelect = (line, stop) => { this.panelStop = stop; this.renderPanel(line); };
     this.els.money.textContent = eur(game.money);
     this.markTool('pan');
+    this.updateLocks();
     this.els.hint.textContent = tools.hintFor('pan');
     this.refresh();
     window.addEventListener('keydown', e => this.key(e));
@@ -107,17 +141,31 @@ export class Hud {
       const b = document.createElement('button');
       b.className = 'btn tool';
       b.title = `${label} (${key})`;
-      b.innerHTML = `${ICONS[id]}<span class="key">${key}</span>`;
+      b.innerHTML = `${ICONS[id]}<span class="key">${key}</span><span class="lock">${ICONS.lock}</span>`;
       b.onclick = () => this.pick(id);
       bar.appendChild(b);
       this.toolButtons.set(id, b);
     }
   }
 
+  /** Candados en las herramientas aún no desbloqueadas por los hitos. */
+  private updateLocks(): void {
+    const g = this.game;
+    const metro = !g.metroUnlocked;
+    this.toolButtons.get('stop:metro')!.classList.toggle('locked', metro);
+    this.toolButtons.get('line:metro')!.classList.toggle('locked', metro);
+    this.toolButtons.get('line:bus')!.classList.toggle('locked', g.net.lines.size >= g.maxLines);
+    this.toolButtons.get('line:metro')!.classList.toggle('locked', metro || g.net.lines.size >= g.maxLines);
+  }
+
   pick(id: string): void {
-    if (id === 'line:bus') this.tools.startLine('bus');
-    else if (id === 'line:metro') this.tools.startLine('metro');
-    else this.tools.setTool(id as Tool);
+    const g = this.game;
+    if ((id === 'stop:metro' || id === 'line:metro') && !g.metroUnlocked) { this.toast(g.metroLockText, 'warn'); return; }
+    if (id === 'line:bus' || id === 'line:metro') {
+      const why = g.canCreateLine(id === 'line:bus' ? 'bus' : 'metro');
+      if (why) { this.toast(why, 'warn'); return; }
+      this.tools.startLine(id === 'line:bus' ? 'bus' : 'metro');
+    } else this.tools.setTool(id as Tool);
   }
 
   private markTool(t: Tool): void {
@@ -134,12 +182,28 @@ export class Hud {
   }
 
   private cycleOverlay(): void {
-    this.overlay = this.overlay === 'none' ? 'demand' : this.overlay === 'demand' ? 'population' : 'none';
+    this.overlay = OVERLAYS[(OVERLAYS.indexOf(this.overlay) + 1) % OVERLAYS.length];
     const b = this.root.querySelector('#overlayBtn') as HTMLButtonElement;
     b.classList.toggle('active', this.overlay !== 'none');
     this.onOverlay(this.overlay);
-    if (this.overlay === 'demand') this.toast('Capa: demanda sin cubrir (rojo = vecinos sin parada cerca)', 'info');
-    else if (this.overlay === 'population') this.toast('Capa: población estimada por edificio', 'info');
+    const tips: Record<Overlay, string> = {
+      none: 'Capa: ninguna',
+      flows: 'Capa: flujos entre barrios (grosor = cuánta gente quiere ir; rojo = no puede)',
+      hexDemand: 'Capa: demanda sin cubrir por zona (vecinos que hoy no tuvieron parada o ruta)',
+      hexPop: 'Capa: población y empleos por zona',
+    };
+    this.toast(tips[this.overlay], 'info');
+  }
+
+  private toggleFichas(): void {
+    this.fichasOn = !this.fichasOn;
+    try { localStorage.setItem('lt-fichas', this.fichasOn ? '1' : '0'); } catch { /* sin almacenamiento */ }
+    this.applyFichas();
+  }
+
+  private applyFichas(): void {
+    this.els.districts.classList.toggle('hidden', !this.fichasOn);
+    (this.root.querySelector('#fichasBtn') as HTMLButtonElement).classList.toggle('active', this.fichasOn);
   }
 
   private key(e: KeyboardEvent): void {
@@ -156,9 +220,55 @@ export class Hud {
     if (map[k]) { this.pick(map[k]); return; }
     if (k === ' ') { e.preventDefault(); this.setSpeed(this.speed === 0 ? 1 : 0); return; }
     if (k === 'g') { this.cycleOverlay(); return; }
+    if (k === 'f') { this.toggleFichas(); return; }
     if (k === 'r') { this.toggleSummary(); return; }
     if (k === 'h') { this.openHelp(); return; }
     if (k === '2') this.setSpeed(2); else if (k === '3') this.setSpeed(4);
+  }
+
+  // ───────────── fichas de barrio ─────────────
+  private buildFichas(): void {
+    const box = this.els.districts;
+    for (const d of this.game.demand.districts.list) {
+      const el = document.createElement('div');
+      el.className = 'ficha';
+      el.style.setProperty('--c', hex(d.color));
+      el.innerHTML = `<div class="fname"><i></i>${d.name}</div><div class="fnums">${fmt(d.residents)} hab · ${fmt(d.jobs)} empl</div><div class="fwait hidden"></div>`;
+      box.appendChild(el);
+      this.fichas.set(d.id, el);
+    }
+  }
+
+  /** Coloca las fichas sobre el mapa (y el hito bajo la barra superior); se llama cada frame. */
+  placeFichas(): void {
+    const tb = this.root.querySelector('#topbar') as HTMLElement;
+    const top = tb.offsetTop + tb.offsetHeight + 6;
+    if (this.goalTop !== top) {
+      this.goalTop = top;
+      this.els.goal.style.top = top + 'px';
+      // en móvil, la pista y los avisos van debajo del hito
+      const goalH = this.els.goal.classList.contains('hidden') ? 0 : this.els.goal.offsetHeight + 6;
+      this.root.style.setProperty('--hud-top', `${top + goalH}px`);
+    }
+    if (!this.fichasOn) return;
+    const z = this.world.zoom;
+    const s = Math.max(0.7, Math.min(1, z * 6));
+    const W = this.world.width, H = this.world.height;
+    for (const d of this.game.demand.districts.list) {
+      const el = this.fichas.get(d.id)!;
+      const p = this.world.toScreen(d);
+      if (p.x < -80 || p.x > W + 80 || p.y < 0 || p.y > H + 60) { el.style.display = 'none'; continue; }
+      el.style.display = '';
+      el.style.transform = `translate(${p.x.toFixed(1)}px, ${p.y.toFixed(1)}px) translate(-50%, -100%) scale(${s.toFixed(3)})`;
+    }
+  }
+
+  private refreshFichas(): void {
+    for (const d of this.game.demand.districts.list) {
+      const el = this.fichas.get(d.id)!;
+      const w = el.querySelector('.fwait')!;
+      if (d.unservedToday > 0) { w.classList.remove('hidden'); w.textContent = `${people(d.unservedToday)} sin servicio hoy`; } else w.classList.add('hidden');
+    }
   }
 
   /** Datos que cambian cada frame (se llama unas pocas veces por segundo). */
@@ -167,9 +277,20 @@ export class Hud {
     this.els.clock.textContent = g.clock;
     this.els.dayLabel.textContent = `día ${g.day}`;
     this.els.delivered.textContent = people(g.today.delivered);
+    this.els.total.textContent = people(g.net.stats.delivered);
     this.els.waiting.textContent = people(g.net.waiting);
     this.els.riding.textContent = people(g.net.riding);
     this.els.satis.textContent = g.satisfaction + '%';
+    const net = g.netToday;
+    this.els.net.textContent = signed(net);
+    this.els.net.className = net >= 0 ? 'pos' : 'neg';
+    const m = g.nextMilestone;
+    if (m && !g.creative) {
+      const prog = g.milestoneProgress(m);
+      this.els.goalText.innerHTML = `<b>Hito:</b> ${m.title} · ${people(Math.min(prog, m.target))} / ${people(m.target)} viajeros ${m.kind === 'daily' ? 'hoy' : 'en total'}`;
+      this.els.goalBar.style.width = `${Math.min(100, (100 * prog) / m.target)}%`;
+    } else if (!g.creative) { this.els.goalText.innerHTML = '<b>Todos los hitos conseguidos</b>'; this.els.goalBar.style.width = '100%'; }
+    if (this.fichasOn) this.refreshFichas();
     if (this.tools.selected && !this.els.panel.classList.contains('hidden')) {
       const l = this.tools.selected;
       const rid = this.els.panel.querySelector('#riding');
@@ -187,41 +308,62 @@ export class Hud {
   }
 
   private renderSummary(numbersOnly = false): void {
-    const s = this.game.summary();
+    const g = this.game;
+    const s = g.summary();
     const el = this.els.summary;
     const demandTotal = s.today.delivered + s.today.lost + s.today.unserved + s.today.rejected;
     const pct = (n: number) => (demandTotal ? Math.round((100 * n) / demandTotal) : 0);
-    const net = s.incomeToday - s.upkeepDaily;
+    const net = s.netToday;
     if (numbersOnly && el.children.length) {
       // actualiza solo los números para no romper los deslizadores mientras se usan
       const set = (id: string, v: string) => { const n = el.querySelector(`[data-v="${id}"]`); if (n) n.textContent = v; };
       set('delivered', people(s.today.delivered)); set('lost', people(s.today.lost)); set('unserved', people(s.today.unserved)); set('rejected', people(s.today.rejected));
-      set('waiting', people(s.waiting)); set('riding', people(s.riding)); set('income', eur(s.incomeToday)); set('net', (net >= 0 ? '+' : '') + eur(net));
+      set('waiting', people(s.waiting)); set('riding', people(s.riding)); set('income', eur(s.incomeToday)); set('net', signed(net));
       set('avgTrip', s.today.avgTrip ? `${Math.round(s.today.avgTrip)} s` : '–');
       const m = el.querySelector('.meter');
       if (m) { const kids = m.children; [s.today.delivered, s.today.lost, s.today.rejected, s.today.unserved].forEach((v, i) => { (kids[i] as HTMLElement).style.width = pct(v) + '%'; }); }
       return;
     }
     const linesRows = s.lines.map(l => `<tr><td><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${hex(l.line.color)};margin-right:5px"></span>${l.line.name}</td><td>${l.line.vehicles.length}</td><td>${people(l.boarded)}</td><td>${eur(l.income)}</td><td>${eur(l.cost)}</td></tr>`).join('');
+    const districts = g.demand.districts.list.slice().sort((a, b) => (b.unservedToday + b.waiting) - (a.unservedToday + a.waiting)).slice(0, 8);
+    const districtRows = districts.map(d => `<tr><td><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${hex(d.color)};margin-right:5px"></span>${d.name}</td><td>${fmt(d.residents)}</td><td>${Math.round(d.coverage * 100)}%</td><td class="${d.unservedToday ? 'neg' : ''}">${people(d.unservedToday)}</td></tr>`).join('');
+    const milestones = g.milestones.map(m => {
+      const prog = g.milestoneProgress(m);
+      const reward = [m.money ? `+${eur(m.money)}` : '', m.metro ? 'metro' : '', m.lines >= 99 ? 'líneas ilimitadas' : m.lines ? `+${m.lines} línea${m.lines > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
+      return `<div class="ms ${m.done ? 'done' : ''}"><span class="chk">${m.done ? '✓' : '○'}</span><span class="mt"><b>${m.title}</b><small>${people(m.target)} viajeros ${m.kind === 'daily' ? 'en un día' : 'en total'} · ${reward}</small></span><span class="mp">${m.done ? '' : `${Math.min(100, Math.round((100 * prog) / m.target))}%`}</span></div>`;
+    }).join('');
+    const finance = g.creative
+      ? `<div class="grid"><span>Billetes hoy</span><b data-v="income">${eur(s.incomeToday)}</b><span>Mantenimiento al día</span><b>${eur(s.upkeepDaily)}</b></div><div class="muted" style="font-size:11px;margin-top:2px">Modo creativo: el dinero no se acaba. El objetivo es mover al máximo de viajeros.</div>`
+      : `<div class="grid"><span>Billetes hoy</span><b data-v="income">${eur(s.incomeToday)}</b>${s.subsidyDaily ? `<span>Subvención municipal</span><b class="pos">+${eur(s.subsidyDaily)}</b>` : ''}<span>Mantenimiento al día</span><b>−${eur(s.upkeepDaily)}</b>${s.debt ? `<span>Intereses del préstamo</span><b>−${eur(s.interestDaily)}</b>` : ''}<span>Balance previsto del día</span><b data-v="net" class="${net >= 0 ? 'pos' : 'neg'}">${signed(net)}</b></div>
+        ${g.def.loans ? `<div class="prow loans"><span>Deuda: <b>${eur(s.debt)}</b></span><button class="btn small" data-loan="borrow" ${s.debt + LOAN_STEP > MAX_DEBT ? 'disabled' : ''}>Pedir ${fmt(LOAN_STEP / 1000)}k €</button><button class="btn small" data-loan="repay" ${s.debt <= 0 ? 'disabled' : ''}>Devolver</button></div><div class="muted" style="font-size:11px">0,4 % de interés al día, hasta ${eur(MAX_DEBT)}.${g.def.bankruptDays ? ` Cinco días seguidos en negativo y pierdes la concesión.` : ' En modo fácil el ayuntamiento cubre los descubiertos.'}</div>` : ''}`;
     el.innerHTML = `
+      <button class="btn small close" id="closeSummary" title="Cerrar (R)">✕</button>
       <h3>Ciudad</h3>
       <div class="grid"><span>Población estimada</span><b>${fmt(s.population)}</b><span>Empleos estimados</span><b>${fmt(s.jobs)}</b><span>Viajes potenciales al día</span><b>${fmt(s.potentialPeople)}</b><span>Vecinos con parada cerca</span><b>${Math.round(s.coverage * 100)}%</b></div>
       <h3>Demanda de hoy</h3>
       <div class="meter"><div style="background:var(--green);width:${pct(s.today.delivered)}%"></div><div style="background:var(--red);width:${pct(s.today.lost)}%"></div><div style="background:#8e5bb5;width:${pct(s.today.rejected)}%"></div><div style="background:var(--border);width:${pct(s.today.unserved)}%"></div></div>
       <div class="legend"><span><i style="background:var(--green)"></i>llegan</span><span><i style="background:var(--red)"></i>se cansan</span><span><i style="background:#8e5bb5"></i>precio</span><span><i style="background:var(--border)"></i>sin parada</span></div>
       <div class="grid" style="margin-top:6px"><span>Llegaron</span><b data-v="delivered">${people(s.today.delivered)}</b><span>Se cansaron de esperar</span><b data-v="lost">${people(s.today.lost)}</b><span>Rechazan el precio</span><b data-v="rejected">${people(s.today.rejected)}</b><span>Sin parada o sin ruta</span><b data-v="unserved">${people(s.today.unserved)}</b><span>Viaje medio</span><b data-v="avgTrip">${s.today.avgTrip ? `${Math.round(s.today.avgTrip)} s` : '–'}</b></div>
+      <h3>Barrios con más demanda sin cubrir</h3>
+      <table><tr><th>barrio</th><th>hab</th><th>cobertura</th><th>sin servicio</th></tr>${districtRows}</table>
       <h3>Oferta</h3>
       <div class="grid"><span>Paradas bus / estaciones</span><b>${s.stops.bus} / ${s.stops.metro}</b><span>Buses / trenes</span><b>${s.vehicles.bus} / ${s.vehicles.metro}</b><span>Plazas en circulación</span><b>${fmt(s.capacity * PEOPLE_PER_PASSENGER)}</b><span>Esperando ahora</span><b data-v="waiting">${people(s.waiting)}</b><span>A bordo ahora</span><b data-v="riding">${people(s.riding)}</b></div>
-      <h3>Finanzas</h3>
-      <div class="grid"><span>Billetes hoy</span><b data-v="income">${eur(s.incomeToday)}</b><span>Mantenimiento al día</span><b>${eur(s.upkeepDaily)}</b><span>Balance del día</span><b data-v="net" class="${net >= 0 ? 'pos' : 'neg'}">${(net >= 0 ? '+' : '') + eur(net)}</b></div>
-      <div class="fare"><label>Bus</label><input type="range" min="0.5" max="4" step="0.1" value="${this.game.fares.bus}" data-fare="bus"><b>${this.game.fares.bus.toFixed(2)} €</b></div>
-      <div class="fare"><label>Metro</label><input type="range" min="0.5" max="4" step="0.1" value="${this.game.fares.metro}" data-fare="metro"><b>${this.game.fares.metro.toFixed(2)} €</b></div>
+      <h3>Finanzas · modo ${GAME_MODES[g.mode].name.toLowerCase()}</h3>
+      ${finance}
+      <h3>Precio del billete</h3>
+      <div class="fare"><label>Bus</label><input type="range" min="0.5" max="4" step="0.1" value="${g.fares.bus}" data-fare="bus"><b>${g.fares.bus.toFixed(2)} €</b></div>
+      <div class="fare"><label>Metro</label><input type="range" min="0.5" max="4" step="0.1" value="${g.fares.metro}" data-fare="metro"><b>${g.fares.metro.toFixed(2)} €</b></div>
       <div class="muted" style="font-size:11px;margin-top:2px">Cuanto más caro el billete, más vecinos deciden no viajar.</div>
       <h3>Costes</h3>
       <div class="grid"><span>Parada de bus · bus</span><b>${eur(MODE.bus.stopCost)} · ${eur(MODE.bus.vehicleCost)} (+${eur(MODE.bus.upkeep)}/día)</b><span>Estación · tren</span><b>${eur(MODE.metro.stopCost)} · ${eur(MODE.metro.vehicleCost)} (+${eur(MODE.metro.upkeep)}/día)</b><span>Túnel de metro</span><b>${eur(MODE.metro.trackCost)}/m</b></div>
+      ${g.creative ? '' : `<h3>Hitos</h3><div class="milestones">${milestones}</div>`}
       ${linesRows ? `<h3>Líneas hoy</h3><table><tr><th>línea</th><th>veh</th><th>viajeros</th><th>billetes</th><th>coste/día</th></tr>${linesRows}</table>` : ''}`;
+    (el.querySelector('#closeSummary') as HTMLButtonElement).onclick = () => this.toggleSummary();
     el.querySelectorAll<HTMLInputElement>('input[data-fare]').forEach(inp => {
-      inp.oninput = () => { const mode = inp.dataset.fare as Mode; this.game.setFare(mode, +inp.value); (inp.nextElementSibling as HTMLElement).textContent = this.game.fares[mode].toFixed(2) + ' €'; };
+      inp.oninput = () => { const mode = inp.dataset.fare as Mode; g.setFare(mode, +inp.value); (inp.nextElementSibling as HTMLElement).textContent = g.fares[mode].toFixed(2) + ' €'; };
+    });
+    el.querySelectorAll<HTMLButtonElement>('[data-loan]').forEach(b => {
+      b.onclick = () => { if (b.dataset.loan === 'borrow') g.borrow(); else g.repay(); this.renderSummary(); };
     });
   }
 
@@ -237,7 +379,8 @@ export class Hud {
       html += `<div class="ptitle">${stop.name}</div><div class="muted">${MODE[stop.mode].stopName} · ${people(stop.queue.length)} esperando</div>
         <div class="prow"><button class="btn small" data-act="removeStop">Quitar parada</button></div><div class="sep"></div>`;
     }
-    html += `<div class="ptitle">Líneas</div>`;
+    const max = this.game.maxLines;
+    html += `<div class="ptitle">Líneas${Number.isFinite(max) ? ` <span class="muted small">${lines.length} de ${max}</span>` : ''}</div>`;
     if (!lines.length) html += `<div class="muted">Aún no hay líneas. Pon paradas y traza una con L o K.</div>`;
     for (const l of lines) {
       const sel = l === selected;
@@ -294,18 +437,37 @@ export class Hud {
     info.innerHTML = `<b>${h.text}</b>${h.sub ? `<div class="muted">${h.sub}</div>` : ''}`;
   }
 
-  toast(text: string, kind: 'info' | 'warn' | 'good' = 'info'): void {
+  toast(text: string, kind: 'info' | 'warn' | 'good' = 'info', ms = 4500): void {
     const t = document.createElement('div');
     t.className = `toast card ${kind}`;
     t.textContent = text;
+    t.style.animationDuration = `${ms}ms`;
     this.els.toasts.appendChild(t);
     while (this.els.toasts.children.length > 4) this.els.toasts.firstElementChild!.remove();
-    setTimeout(() => t.remove(), 4500);
+    setTimeout(() => t.remove(), ms);
   }
 
   private dayReport(r: DayReport): void {
-    const net = r.income - r.upkeep;
-    this.toast(`Día ${r.day}: ${people(r.delivered)} viajeros, ${r.satisfaction}% llegaron, ${people(r.unserved)} sin parada cerca · ${net >= 0 ? '+' : ''}${eur(net)} (billetes ${eur(r.income)}, mantenimiento ${eur(r.upkeep)})`, net >= 0 ? 'good' : 'warn');
+    const net = r.income + r.subsidy - r.upkeep - r.interest;
+    const extra = [r.subsidy ? `subvención ${eur(r.subsidy)}` : '', r.interest ? `intereses ${eur(r.interest)}` : ''].filter(Boolean).join(', ');
+    this.toast(`Día ${r.day}: ${people(r.delivered)} viajeros, ${r.satisfaction}% llegaron, ${people(r.unserved)} sin parada cerca · ${signed(net)} (billetes ${eur(r.income)}, mantenimiento ${eur(r.upkeep)}${extra ? ', ' + extra : ''})`, net >= 0 ? 'good' : 'warn', 7000);
+  }
+
+  private milestone(m: Milestone): void {
+    const reward = [m.money ? `+${eur(m.money)}` : '', m.metro ? 'metro desbloqueado' : '', m.lines >= 99 ? 'líneas ilimitadas' : m.lines ? `+${m.lines} línea${m.lines > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
+    this.toast(`🏆 Hito conseguido: ${m.title} · ${reward}`, 'good', 8000);
+    this.updateLocks();
+    if (this.summaryOpen) this.renderSummary();
+  }
+
+  private gameOver(reason: string): void {
+    this.setSpeed(0);
+    const m = this.modal(`<h2>Fin de la concesión</h2><p>${reason}</p>
+      <p class="muted" style="font-size:13px">Puedes seguir con esta misma red en modo creativo (dinero infinito) o volver al inicio.</p>
+      <div class="stack"><button class="btn primary" id="creative">Seguir en modo creativo</button><button class="btn" id="exit">Volver al inicio</button></div>`);
+    m.onclick = null;
+    (m.querySelector('#creative') as HTMLButtonElement).onclick = () => { m.remove(); this.onMenu('creative'); };
+    (m.querySelector('#exit') as HTMLButtonElement).onclick = () => { m.remove(); this.onMenu('exit'); };
   }
 
   private modal(html: string): HTMLElement {
@@ -322,9 +484,9 @@ export class Hud {
     const was = this.speed;
     this.setSpeed(0);
     const days = this.game.days.slice(-7).reverse();
-    const rows = days.map(d => `<tr><td>Día ${d.day}</td><td>${people(d.delivered)}</td><td>${d.satisfaction}%</td><td>${Math.round(d.coverage * 100)}%</td><td class="${d.income - d.upkeep >= 0 ? 'pos' : 'neg'}">${eur(d.income - d.upkeep)}</td></tr>`).join('');
+    const rows = days.map(d => { const n = d.income + (d.subsidy ?? 0) - d.upkeep - (d.interest ?? 0); return `<tr><td>Día ${d.day}</td><td>${people(d.delivered)}</td><td>${d.satisfaction}%</td><td>${Math.round(d.coverage * 100)}%</td><td class="${n >= 0 ? 'pos' : 'neg'}">${signed(n)}</td></tr>`; }).join('');
     const styles = MAP_STYLES.map(s => `<button class="btn ${s.id === this.style ? 'active' : ''}" data-style="${s.id}">${s.name}<small>${s.desc}</small></button>`).join('');
-    const m = this.modal(`<h2>Little Transit</h2><div class="stack">
+    const m = this.modal(`<h2>Little Transit <small class="muted" style="font-size:13px;font-weight:600">· modo ${GAME_MODES[this.game.mode].name.toLowerCase()}</small></h2><div class="stack">
       <button class="btn primary" id="resume">Seguir jugando</button>
       <button class="btn" id="save">Guardar partida</button>
       <button class="btn" id="help">Cómo se juega</button>
@@ -347,12 +509,14 @@ export class Hud {
     const m = this.modal(`<h2>Cómo se juega</h2>
       <p>La ciudad es de verdad. Cada punto que ves esperando representa a ${PEOPLE_PER_PASSENGER} personas; cuántas salen de cada edificio depende de su tamaño y sus plantas. Van de casa al trabajo, las tiendas y los equipamientos, y vuelven por la tarde.</p>
       <ul>
+        <li><b>Barrios</b>: cada ficha muestra sus habitantes y empleos. Las siluetas coral que se acumulan en un barrio son vecinos que quieren viajar y no tienen parada cerca: ahí hace falta una. Cada viajero que espera en una parada lleva el <b>color del barrio</b> al que va (pasa el ratón por la parada para verlo).</li>
         <li><b>Paradas</b>: <kbd>B</kbd> pone una parada de bus junto a una calle; <kbd>M</kbd> una estación de metro donde quieras. Cada parada atrae a los vecinos que viven a unos minutos a pie.</li>
         <li><b>Líneas</b>: <kbd>L</kbd> (bus) o <kbd>K</kbd> (metro) y haz clic en las paradas por orden. El bus sigue las calles reales; el metro va en línea recta por túnel. Clic en la primera parada para cerrar un bucle; <kbd>Enter</kbd> para terminar.</li>
-        <li>En el panel de la derecha añades <b>vehículos</b> a cada línea, la amplías, cambias su color o la borras.</li>
-        <li><kbd>R</kbd> abre el <b>resumen</b>: demanda, oferta, finanzas y el precio del billete de cada modo. <kbd>G</kbd> alterna las capas de demanda sin cubrir y de población.</li>
-        <li>Los viajeros hacen <b>transbordo</b> si hace falta y se van si esperan demasiado. Los puntos de colores sobre los edificios son viajes que no pudiste atender (coral: sin parada; amarillo: sin ruta; morado: precio).</li>
-        <li>Cada viaje completado paga billete; cada vehículo cuesta mantenimiento diario. Al final del día recibes el informe.</li>
+        <li>En el panel de la derecha añades <b>vehículos</b> a cada línea, la amplías, cambias su color o la borras. Con una línea seleccionada, <b>arrástrala</b> para llevarla por otra calle sin añadir paradas; sus puntos de paso se mueven arrastrándolos y se quitan con <kbd>D</kbd>.</li>
+        <li><kbd>G</kbd> alterna las <b>capas</b>: flujos entre barrios (por dónde quiere moverse la gente), demanda sin cubrir por zona y población. <kbd>F</kbd> oculta o muestra las fichas de barrio.</li>
+        <li><kbd>R</kbd> abre el <b>resumen</b>: demanda, barrios, oferta, finanzas, préstamos, precio del billete e hitos.</li>
+        <li><b>Hitos</b>: empiezas con dos líneas de bus; al alcanzar cierta cantidad de viajeros desbloqueas más líneas, el metro y premios en dinero. En modo creativo todo está disponible desde el principio.</li>
+        <li><b>Dinero</b>: cada viaje paga billete; cada vehículo cuesta mantenimiento diario. En modo fácil el ayuntamiento te subvenciona; en normal, cinco días seguidos en negativo y pierdes la concesión (hay préstamos).</li>
         <li><kbd>Espacio</kbd> pausa; <kbd>2</kbd> y <kbd>3</kbd> aceleran. Hay horas punta por la mañana y por la tarde, y la demanda crece un poco cada día.</li>
       </ul>
       <div class="stack"><button class="btn primary" id="ok">¡Entendido!</button></div>`);

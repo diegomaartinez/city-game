@@ -26,6 +26,7 @@ export class Tools {
   private pointers = new Map<number, Pt>();
   private panStart: { x: number; y: number; rx: number; ry: number; moved: boolean } | null = null;
   private lastPinch = 0;
+  private lastPinchCenter: Pt | null = null;
   private hoverStop: Stop | undefined;
   private cursor: Pt = { x: 0, y: 0 };
   /** Arrastre de un punto de paso de la línea seleccionada. */
@@ -72,7 +73,9 @@ export class Tools {
   /** Empieza a trazar una línea nueva. */
   startLine(mode: Mode): void {
     if (this.tool === 'line') this.finishLine();
-    this.editing = this.game.createLine(mode);
+    const l = this.game.createLine(mode);
+    if (!l) return;
+    this.editing = l;
     this.selected = this.editing;
     this.transit.highlight = this.editing;
     this.transit.drawNetwork();
@@ -149,7 +152,14 @@ export class Tools {
     const c = this.world.app.canvas;
     c.setPointerCapture(e.pointerId);
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (this.pointers.size === 2) { this.lastPinch = this.pinchDist(); return; }
+    if (this.pointers.size === 2) {
+      // segundo dedo: cancela lo que estuviera haciendo el primero y pasa a mover/ampliar
+      this.lastPinch = this.pinchDist();
+      const [a, b] = [...this.pointers.values()];
+      this.lastPinchCenter = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      this.panStart = null; this.viaDrag = null; this.preview.clear();
+      return;
+    }
     // arrastrar la línea seleccionada para ajustar su recorrido (sin añadir paradas)
     if (this.tool === 'pan' && e.button === 0 && this.selected && this.selected.fwd.length) {
       const w = this.world.toWorld(e.clientX, e.clientY);
@@ -214,8 +224,10 @@ export class Tools {
     if (this.pointers.size === 2) {
       const d = this.pinchDist();
       const [a, b] = [...this.pointers.values()];
-      if (this.lastPinch > 0) this.world.zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / this.lastPinch);
-      this.lastPinch = d;
+      const c = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      if (this.lastPinch > 0) this.world.zoomAt(c.x, c.y, d / this.lastPinch);
+      if (this.lastPinchCenter) this.world.panBy(c.x - this.lastPinchCenter.x, c.y - this.lastPinchCenter.y);
+      this.lastPinch = d; this.lastPinchCenter = c;
       return;
     }
     if (this.viaDrag) {
@@ -241,6 +253,8 @@ export class Tools {
 
   private up(e: PointerEvent): void {
     this.pointers.delete(e.pointerId);
+    if (this.pointers.size < 2) { this.lastPinch = 0; this.lastPinchCenter = null; }
+    if (this.pointers.size === 1) return; // queda un dedo: no interpretar su levantamiento como clic
     if (this.viaDrag) {
       const { line, seg, idx, vias } = this.viaDrag;
       this.viaDrag = null;
@@ -303,13 +317,24 @@ export class Tools {
 
   describe(w: Pt): Hover | null {
     const s = this.hoverStop;
+    const D = this.game.demand.districts;
     if (s) {
       const lines = s.lines.map(id => this.game.net.lines.get(id)?.name).filter(Boolean).join(', ');
-      return { text: s.name, sub: `${MODE[s.mode].stopName} · ${s.queue.length * PEOPLE_PER_PASSENGER} esperando${lines ? ' · ' + lines : ' · sin línea'}` };
+      // a qué barrios quieren ir los que esperan
+      const dest = new Map<number, number>();
+      for (const p of s.queue) dest.set(p.dest, (dest.get(p.dest) ?? 0) + 1);
+      const top = [...dest.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d, n]) => `${D.list[d]?.name ?? '?'} ${n * PEOPLE_PER_PASSENGER}`).join(', ');
+      return { text: s.name, sub: `${MODE[s.mode].stopName} · ${s.queue.length * PEOPLE_PER_PASSENGER} esperando${lines ? ' · ' + lines : ' · sin línea'}${top ? `<br>Van a: ${top}` : ''}` };
     }
     const l = this.tool === 'pan' ? this.lineAt(w.x, w.y) : null;
     if (l) return { text: l.name, sub: `${MODE[l.mode].name} · ${l.stops.length} paradas · ${l.vehicles.length} vehículos · ${l.vehicles.reduce((a, v) => a + v.passengers.length, 0) * PEOPLE_PER_PASSENGER} a bordo` };
-    return this.map.describe(w.x, w.y);
+    const half = this.game.data.radius + 60;
+    if (Math.abs(w.x) > half || Math.abs(w.y) > half) return null;
+    const d = D.list[D.nearest(w.x, w.y)];
+    const base = this.map.describe(w.x, w.y);
+    const dtxt = `${d.name} · ${d.residents.toLocaleString('es-ES')} hab · ${d.jobs.toLocaleString('es-ES')} empleos${d.waiting >= 1 ? ` · ${Math.round(d.waiting) * PEOPLE_PER_PASSENGER} esperan sin parada` : ''}`;
+    if (!base) return { text: d.name, sub: dtxt.slice(d.name.length + 3) };
+    return { text: base.text, sub: (base.sub ? base.sub + '<br>' : '') + dtxt };
   }
 
   get pointerWorld(): Pt { return this.cursor; }

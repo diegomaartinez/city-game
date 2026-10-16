@@ -1,7 +1,7 @@
 // Convierte la respuesta de Overpass en la ciudad del juego: calles, edificios (con su uso inferido),
 // zonas verdes y agua, todo proyectado a metros alrededor del centro.
 import type { OsmElement, OsmResponse } from './overpass.ts';
-import { CITY_VERSION, CORE_RADIUS, MARGIN, type Area, type AreaKind, type Building, type BuildingUse, type CityData, type Landuse, type Pt, type RoadClass, type RoadWay, type ServiceKind, type Zone } from './types.ts';
+import { CITY_VERSION, CORE_RADIUS, MARGIN, type Area, type AreaKind, type Building, type BuildingUse, type CityData, type Landuse, type PlaceNode, type Pt, type RoadClass, type RoadWay, type ServiceKind, type Zone } from './types.ts';
 import { Projection, bbox, centroid, hashInt, pointInPoly, polygonArea } from './geo.ts';
 import { seaPolygons } from './coast.ts';
 
@@ -110,6 +110,7 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
   const buildingCandidates: Array<{ id: number; tags: Tags; poly: Pt[] }> = [];
   const serviceAreas: Array<{ kind: ServiceKind; poly: Pt[] }> = [];
   const coastlines: Pt[][] = [];
+  const places: PlaceNode[] = [];
   const limit = radius + MARGIN; // la isla jugable
 
   const inRange = (poly: Pt[]) => poly.some(p => Math.abs(p.x) <= limit && Math.abs(p.y) <= limit);
@@ -126,6 +127,13 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
 
   for (const el of res.elements as OsmElement[]) {
     const t = el.tags ?? {};
+    if (el.type === 'node') {
+      if (t.name && el.lat !== undefined && el.lon !== undefined && (t.place === 'neighbourhood' || t.place === 'quarter' || t.place === 'suburb')) {
+        const p = proj.toXY(el.lat, el.lon);
+        if (Math.abs(p.x) <= limit && Math.abs(p.y) <= limit) places.push({ name: t.name, kind: t.place, x: p.x, y: p.y });
+      }
+      continue;
+    }
     if (el.type === 'way' && el.geometry) {
       const g = el.geometry;
       if (t.natural === 'coastline') { coastlines.push(g.map(p => proj.toXY(p.lat, p.lon))); continue; }
@@ -211,6 +219,6 @@ export function parseOsm(res: OsmResponse, name: string, lat: number, lon: numbe
     zones.push({ id: zones.length + 1, kind: lu.kind, poly: lu.poly, area, cx: c.x, cy: c.y });
   }
 
-  const city: CityData = { name, lat, lon, radius, core, roads, buildings, areas, zones, fetchedAt: Date.now(), version: CITY_VERSION };
+  const city: CityData = { name, lat, lon, radius, core, roads, buildings, areas, zones, places, fetchedAt: Date.now(), version: CITY_VERSION };
   return { city, stats: { roads: roads.length, buildings: buildings.length, areas: areas.length, services } };
 }

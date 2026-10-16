@@ -54,6 +54,8 @@ export interface Passenger {
   leg: number;
   born: number;
   waitSince: number;
+  /** Barrio de destino (índice en Demand.districts), para colorear al viajero. */
+  dest: number;
 }
 
 export interface Stop {
@@ -508,8 +510,8 @@ export class Network {
 
   // ───────────── viajeros ─────────────
 
-  spawn(from: number, to: number, legs: Leg[], now: number): Passenger {
-    const p: Passenger = { id: this.nextPassenger++, from, to, legs, leg: 0, born: now, waitSince: now };
+  spawn(from: number, to: number, legs: Leg[], now: number, dest = 0): Passenger {
+    const p: Passenger = { id: this.nextPassenger++, from, to, legs, leg: 0, born: now, waitSince: now, dest };
     this.stops.get(from)!.queue.push(p);
     this.stats.spawned++;
     return p;

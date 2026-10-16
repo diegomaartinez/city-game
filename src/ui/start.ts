@@ -4,9 +4,9 @@ import { searchPlaces, type Place } from '../data/nominatim.ts';
 import { fetchCity } from '../data/overpass.ts';
 import { parseOsm } from '../data/parse.ts';
 import { CITY_VERSION, CORE_RADIUS, type CityData } from '../data/types.ts';
-import type { SaveData } from '../sim/game.ts';
+import { GAME_MODES, GAME_MODE_LIST, type GameMode, type SaveData } from '../sim/game.ts';
 
-export interface StartResult { city: CityData; key: string; save?: SaveData }
+export interface StartResult { city: CityData; key: string; mode: GameMode; save?: SaveData }
 
 const GAME_NAME = 'Little Transit';
 
@@ -30,12 +30,12 @@ export function showStart(): Promise<StartResult> {
           <ul class="results card hidden" id="results"></ul>
         </div>
         <div class="chosen" id="chosen">Escribe el nombre de una ciudad y elige un resultado.</div>
-        <div class="row">
-          <label for="radius">Radio</label>
-          <input id="radius" type="range" min="500" max="10000" step="500" value="1500" />
-          <b id="radiusLabel">1,5 km</b>
+        <div class="sizes" id="sizes">
+          <button class="btn size active" data-radius="3000"><b>Medio</b><small>3 km: el centro y todos sus edificios</small></button>
+          <button class="btn size" data-radius="10000"><b>Grande</b><small>10 km: área metropolitana, descarga más lenta</small></button>
         </div>
-        <div class="muted" id="radiusNote" style="font-size:12px;margin-top:4px"></div>
+        <input id="radius" type="hidden" value="3000" />
+        <div class="modes" id="modes">${GAME_MODE_LIST.map(m => `<button class="btn mode ${m === 'facil' ? 'active' : ''}" data-mode="${m}"><b>${GAME_MODES[m].name}</b><small>${GAME_MODES[m].desc}</small></button>`).join('')}</div>
         <div class="row">
           <button class="btn primary" id="go" disabled>Cargar ciudad</button>
           <button class="btn small hidden" id="cancel">Cancelar</button>
@@ -51,7 +51,17 @@ export function showStart(): Promise<StartResult> {
     const results = root.querySelector<HTMLUListElement>('#results')!;
     const chosen = root.querySelector<HTMLDivElement>('#chosen')!;
     const radius = root.querySelector<HTMLInputElement>('#radius')!;
-    const radiusLabel = root.querySelector<HTMLElement>('#radiusLabel')!;
+    const sizeButtons = [...root.querySelectorAll<HTMLButtonElement>('#sizes .size')];
+    const modeButtons = [...root.querySelectorAll<HTMLButtonElement>('#modes .mode')];
+    let mode: GameMode = 'facil';
+    try { const m = localStorage.getItem('lt-mode') as GameMode | null; if (m && GAME_MODES[m]) mode = m; } catch { /* sin almacenamiento */ }
+    const setMode = (m: GameMode) => {
+      mode = m;
+      for (const b of modeButtons) b.classList.toggle('active', b.dataset.mode === m);
+      try { localStorage.setItem('lt-mode', m); } catch { /* sin almacenamiento */ }
+    };
+    setMode(mode);
+    for (const b of modeButtons) b.onclick = () => setMode(b.dataset.mode as GameMode);
     const go = root.querySelector<HTMLButtonElement>('#go')!;
     const cancel = root.querySelector<HTMLButtonElement>('#cancel')!;
     const progress = root.querySelector<HTMLDivElement>('#progress')!;
@@ -66,14 +76,11 @@ export function showStart(): Promise<StartResult> {
     let searchAbort: AbortController | null = null;
 
     const fmtKm = (m: number) => (m / 1000).toLocaleString('es-ES', { maximumFractionDigits: 2 }) + ' km';
-    const radiusNote = root.querySelector<HTMLElement>('#radiusNote')!;
-    const updateRadius = () => {
-      const r = +radius.value;
-      radiusLabel.textContent = fmtKm(r);
-      radiusNote.textContent = r > CORE_RADIUS ? `Hasta ${fmtKm(CORE_RADIUS)} del centro con todos los edificios; más allá, calles principales y zonas de uso del suelo (área metropolitana). Descarga más larga.` : 'Todas las calles y edificios. Más radio, más descarga.';
+    const setRadius = (r: number) => {
+      radius.value = String(r);
+      for (const b of sizeButtons) b.classList.toggle('active', +b.dataset.radius! === r);
     };
-    radius.oninput = updateRadius;
-    updateRadius();
+    for (const b of sizeButtons) b.onclick = () => setRadius(+b.dataset.radius!);
 
     const setPlace = (p: Place) => {
       place = p;
@@ -119,7 +126,7 @@ export function showStart(): Promise<StartResult> {
       const p = place;
       const rad = +radius.value;
       const key = cityKey(p.lat, p.lon, rad);
-      go.disabled = true; q.disabled = true; radius.disabled = true;
+      go.disabled = true; q.disabled = true; for (const b of sizeButtons) b.disabled = true;
       cancel.classList.remove('hidden');
       bar.classList.remove('hidden');
       barFill.style.width = '2%';
@@ -129,19 +136,19 @@ export function showStart(): Promise<StartResult> {
         if (cached && cached.version === CITY_VERSION) {
           progress.textContent = 'Ya tenías este mapa guardado.';
           const save = await cache.getSave<SaveData>(key);
-          finish({ city: cached, key, save });
+          finish({ city: cached, key, mode: save?.mode ?? mode, save });
           return;
         }
-        progress.textContent = 'Conectando con OpenStreetMap…';
+        progress.textContent = 'Descargando… puede tardar unos segundos';
         const res = await fetchCity(p.lat, p.lon, rad, CORE_RADIUS, pr => {
-          const what = pr.parts === 2 ? (pr.part === 1 ? 'el centro (calles y edificios)' : 'el área metropolitana (calles principales y zonas)') : 'calles y edificios';
           const base = pr.parts === 2 && pr.part === 2 ? 50 : 0;
-          if (pr.phase === 'connecting') progress.textContent = `Conectando con ${pr.server}${pr.attempt ? ' (reintento)' : ''} para ${what}… puede tardar un minuto`;
+          const what = pr.parts === 2 && pr.part === 2 ? 'el área metropolitana' : 'el mapa';
+          if (pr.phase === 'connecting') progress.textContent = `Descargando ${what}… puede tardar unos segundos${pr.attempt ? ' (reintentando)' : ''}`;
           else if (pr.phase === 'downloading') {
             const mb = pr.bytes / 1e6;
             progress.textContent = `Descargando ${what}… ${mb.toFixed(1)} MB`;
             barFill.style.width = `${Math.min(base + 40, base + 5 + mb * 4)}%`;
-          } else progress.textContent = 'Leyendo el mapa…';
+          } else progress.textContent = 'Preparando el mapa…';
         }, abort.signal);
         barFill.style.width = '95%';
         await new Promise(r => setTimeout(r, 30));
@@ -151,12 +158,12 @@ export function showStart(): Promise<StartResult> {
         barFill.style.width = '100%';
         await cache.putCity(key, city).catch(() => undefined);
         const save = await cache.getSave<SaveData>(key).catch(() => undefined);
-        finish({ city, key, save });
+        finish({ city, key, mode: save?.mode ?? mode, save });
       } catch (e) {
         const msg = (e as Error).message;
         progress.innerHTML = `<span class="error">${msg === 'cancelado' ? 'Cancelado.' : msg}</span>`;
         bar.classList.add('hidden');
-        go.disabled = false; q.disabled = false; radius.disabled = false;
+        go.disabled = false; q.disabled = false; for (const b of sizeButtons) b.disabled = false;
         cancel.classList.add('hidden');
       }
     };
@@ -172,14 +179,14 @@ export function showStart(): Promise<StartResult> {
         const key = cityKey(c.lat, c.lon, c.radius);
         const save = await cache.getSave<SaveData>(key);
         const li = el('li');
-        const info = save ? `día ${Math.floor(save.minute / 1440) + 1}` : 'sin empezar';
+        const info = save ? `día ${Math.floor(save.minute / 1440) + 1} · ${GAME_MODES[save.mode ?? 'facil'].name.toLowerCase()}` : 'sin empezar';
         li.innerHTML = `<span><b>${c.name}</b> · ${fmtKm(c.radius)} · <small>${info}</small></span>`;
         const play = el('button', 'btn small', save ? 'Continuar' : 'Jugar');
         play.onclick = () => {
-          if (c.version === CITY_VERSION) { finish({ city: c, key, save }); return; }
+          if (c.version === CITY_VERSION) { finish({ city: c, key, mode: save?.mode ?? mode, save }); return; }
           // mapa guardado con un formato antiguo: se vuelve a descargar conservando la partida
           place = { name: c.name, displayName: c.name, lat: c.lat, lon: c.lon, type: 'city' };
-          radius.value = String(c.radius); radiusLabel.textContent = fmtKm(c.radius);
+          radius.value = String(c.radius);
           chosen.innerHTML = `<b>${c.name}</b> · el mapa se actualizará al cargar`;
           void loadNew();
         };

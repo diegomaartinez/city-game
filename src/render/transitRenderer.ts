@@ -2,18 +2,29 @@
 import { Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
 import type { Pt } from '../data/types.ts';
 import type { Game } from '../sim/game.ts';
-import { MODE, type Line, type Mode, type Stop, type Vehicle } from '../sim/transit.ts';
+import { MODE, PEOPLE_PER_PASSENGER, type Line, type Mode, type Stop, type Vehicle } from '../sim/transit.ts';
 import type { World } from './world.ts';
 import { INK, STYLES, type MapStyle } from './palette.ts';
 
 const LINE_WIDTH: Record<Mode, number> = { bus: 3.6, metro: 5.5 };
+
+/** Capas de demanda: flujos entre barrios, hexágonos de demanda sin cubrir, hexágonos de población. */
+export type Overlay = 'none' | 'flows' | 'hexDemand' | 'hexPop';
+export const OVERLAYS: Overlay[] = ['none', 'flows', 'hexDemand', 'hexPop'];
+
+const LABEL_STYLE = { fontFamily: 'Rubik Variable, system-ui, sans-serif', fontSize: 11, fontWeight: '800' } as const;
 
 export class TransitRenderer {
   private linesG = new Graphics();
   private stopsG = new Graphics();
   private queuesG = new Graphics();
   private markersG = new Graphics();
-  private heatG = new Graphics();
+  private waitingG = new Graphics();
+  private waitingLabels = new Map<number, Text>();
+  private flowsG = new Graphics();
+  private hexG = new Graphics();
+  private hexLabels = new Map<number, Text>();
+  private hexLayer = new Container();
   private labels = new Map<number, Text>();
   private labelLayer = new Container();
   private vehicleSprites = new Map<Vehicle, { body: Sprite; full: Sprite }>();
@@ -22,22 +33,25 @@ export class TransitRenderer {
   private dotTex: Texture;
   /** Línea resaltada (en edición o seleccionada); las demás se atenúan. */
   highlight: Line | null = null;
-  overlay: 'none' | 'demand' | 'population' = 'none';
-  private heatTimer = 0;
+  overlay: Overlay = 'none';
+  private overlayTimer = 9;
+  private waitingTimer = 9;
+  private waitingZoom = 1;
+  private drawnOverlay: Overlay = 'none';
   private drawnZoom = -1;
   private ink = INK;
   private casing = 0xffffff;
   private stopFill = 0xffffff;
-  private populationG: Graphics | null = null;
 
   /** Factor para que paradas y líneas no desaparezcan al alejar la cámara (mínimo en píxeles). */
-  private get k(): number { return Math.max(1, 1.5 / this.world.zoom); }
+  private get k(): number { return Math.max(1, 2.2 / this.world.zoom); }
 
   constructor(private world: World, private game: Game) {
     world.lines.addChild(this.linesG);
     world.stops.addChild(this.stopsG, this.queuesG, this.labelLayer);
-    world.markers.addChild(this.markersG);
-    world.heat.addChild(this.heatG);
+    world.markers.addChild(this.markersG, this.waitingG);
+    world.heat.addChild(this.hexLayer, this.flowsG);
+    this.hexLayer.addChild(this.hexG);
     this.busTex = this.makeVehicleTexture(11, 3.2, false);
     this.metroTex = this.makeVehicleTexture(30, 3.6, true);
     this.dotTex = this.makeDotTexture();
@@ -55,7 +69,7 @@ export class TransitRenderer {
     this.metroTex = this.makeVehicleTexture(30, 3.6, true);
     for (const [, sp] of this.vehicleSprites) { sp.body.destroy(); sp.full.destroy(); }
     this.vehicleSprites.clear();
-    this.populationG?.destroy(); this.populationG = null;
+    this.overlayTimer = 9;
     this.drawNetwork();
   }
 
@@ -149,21 +163,101 @@ export class TransitRenderer {
     this.drawQueues();
     this.updateVehicles();
     this.drawMarkers(now);
-    this.heatTimer += dt;
-    if (this.overlay === 'demand' && this.heatTimer > 1) { this.heatTimer = 0; this.drawHeat(); }
-    if (this.overlay !== 'demand') this.heatG.clear();
-    if (this.overlay === 'population') { if (!this.populationG) this.drawPopulation(); this.populationG!.visible = true; }
-    else if (this.populationG) this.populationG.visible = false;
+    this.waitingTimer += dt;
+    if (this.waitingTimer > 0.25 || Math.abs(z - this.waitingZoom) / this.waitingZoom > 0.05) { this.waitingTimer = 0; this.waitingZoom = z; this.drawWaiting(); }
+    this.overlayTimer += dt;
+    if (this.overlay !== this.drawnOverlay) { this.overlayTimer = 9; this.drawnOverlay = this.overlay; this.flowsG.clear(); this.hexG.clear(); for (const l of this.hexLabels.values()) l.visible = false; }
+    if (this.overlayTimer > 1) {
+      this.overlayTimer = 0;
+      if (this.overlay === 'flows') this.drawFlows();
+      else if (this.overlay === 'hexDemand' || this.overlay === 'hexPop') this.drawHexes(this.overlay);
+    }
+    if (this.overlay === 'hexDemand' || this.overlay === 'hexPop') {
+      const sc = Math.max(0.5, 1 / z);
+      const show = this.game.demand.hexR * z * 1.7 > 34;
+      for (const l of this.hexLabels.values()) { if (l.visible) l.scale.set(sc); l.renderable = show; }
+    }
   }
 
-  private drawPopulation(): void {
-    const g = new Graphics();
-    for (const p of this.game.demand.populationPoints()) {
-      const r = 2 + Math.sqrt(p.people) * 0.9;
-      g.circle(p.x, p.y, r).fill({ color: 0x2f6fc4, alpha: Math.min(0.35, 0.06 + p.people / 600) });
+  // ───────────── barrios: vecinos esperando sin parada ─────────────
+  private drawWaiting(): void {
+    const g = this.waitingG;
+    g.clear();
+    const zoom = this.world.zoom;
+    const k = Math.max(1, 2.4 / zoom);
+    const seen = new Set<number>();
+    for (const d of this.game.demand.districts.list) {
+      if (d.waiting < 1) continue;
+      seen.add(d.id);
+      const n = Math.min(21, Math.round(d.waiting));
+      // siluetas en filas bajo el centro del barrio
+      const cols = Math.min(7, n);
+      const sx = 5.2 * k, sy = 7.5 * k;
+      const x0 = d.x - ((cols - 1) * sx) / 2, y0 = d.y + 9 * k;
+      for (let i = 0; i < n; i++) {
+        const cx = x0 + (i % cols) * sx + (Math.floor(i / cols) % 2) * sx * 0.5, cy = y0 + Math.floor(i / cols) * sy;
+        g.circle(cx, cy - 2.6 * k, 1.6 * k).fill(0xd9655c);
+        g.roundRect(cx - 1.7 * k, cy - 0.8 * k, 3.4 * k, 4.6 * k, 1.2 * k).fill(0xe88a82);
+      }
+      let label = this.waitingLabels.get(d.id);
+      if (!label) { label = new Text({ text: '', style: { ...LABEL_STYLE, fontSize: 10, fill: 0xd23b33 } }); label.anchor.set(0.5, 0); this.world.markers.addChild(label); this.waitingLabels.set(d.id, label); }
+      const txt = `${(Math.round(d.waiting) * PEOPLE_PER_PASSENGER).toLocaleString('es-ES')} esperan`;
+      if (label.text !== txt) label.text = txt;
+      label.position.set(d.x, y0 + (Math.ceil(n / cols)) * sy + 1 * k);
+      label.scale.set(Math.max(0.5, 1 / zoom));
+      label.visible = d.waiting >= 3;
     }
-    this.world.heat.addChild(g);
-    this.populationG = g;
+    for (const [id, l] of this.waitingLabels) if (!seen.has(id)) l.visible = false;
+  }
+
+  // ───────────── capa: flujos entre barrios ─────────────
+  private drawFlows(): void {
+    const g = this.flowsG;
+    g.clear();
+    const k = this.k;
+    const flows = this.game.demand.districts.topFlows(70);
+    if (!flows.length) return;
+    const max = flows[0].trips;
+    for (const f of flows.slice().reverse()) {
+      const share = f.trips / max;
+      const w = (1.5 + 9 * Math.sqrt(share)) * k;
+      const lost = f.trips ? f.unserved / f.trips : 0;
+      const color = lerpColor(0x2f6fc4, 0xd23b33, lost);
+      const dx = f.to.x - f.from.x, dy = f.to.y - f.from.y, len = Math.hypot(dx, dy) || 1;
+      const cx = (f.from.x + f.to.x) / 2 - (dy / len) * len * 0.12, cy = (f.from.y + f.to.y) / 2 + (dx / len) * len * 0.12;
+      g.moveTo(f.from.x, f.from.y).quadraticCurveTo(cx, cy, f.to.x, f.to.y).stroke({ color: 0xffffff, width: w + 2 * k, alpha: 0.5, cap: 'round' });
+      g.moveTo(f.from.x, f.from.y).quadraticCurveTo(cx, cy, f.to.x, f.to.y).stroke({ color, width: w, alpha: 0.35 + 0.4 * share, cap: 'round' });
+    }
+    for (const d of this.game.demand.districts.list) g.circle(d.x, d.y, 4 * k).fill(0xffffff).stroke({ color: this.ink, width: 1.2 * k });
+  }
+
+  // ───────────── capa: hexágonos ─────────────
+  private drawHexes(mode: 'hexDemand' | 'hexPop'): void {
+    const g = this.hexG;
+    g.clear();
+    const dm = this.game.demand;
+    let max = 0;
+    for (const h of dm.hexes.values()) { const v = mode === 'hexPop' ? h.residents + h.jobs : h.unserved; if (v > max) max = v; }
+    if (!max) { for (const l of this.hexLabels.values()) l.visible = false; return; }
+    const seen = new Set<number>();
+    for (const [key, h] of dm.hexes) {
+      const v = mode === 'hexPop' ? h.residents + h.jobs : h.unserved;
+      if (v < (mode === 'hexPop' ? 20 : 0.5)) continue;
+      seen.add(key);
+      const t = Math.sqrt(v / max);
+      const c = dm.hexCorners(h);
+      g.poly(c.map(p => [p.x, p.y]).flat(), true);
+      if (mode === 'hexPop') g.fill({ color: lerpColor(0x8fb5e6, 0x1f4e9c, t), alpha: 0.1 + 0.4 * t });
+      else g.fill({ color: lerpColor(0xf3b9a8, 0xc62828, t), alpha: 0.12 + 0.38 * t });
+      g.stroke({ color: 0xffffff, width: 1.2, alpha: 0.6 });
+      let label = this.hexLabels.get(key);
+      if (!label) { label = new Text({ text: '', style: { ...LABEL_STYLE, fill: this.ink } }); label.anchor.set(0.5); this.hexLayer.addChild(label); this.hexLabels.set(key, label); }
+      const people = mode === 'hexPop' ? Math.round(h.residents + h.jobs) : Math.round(h.unserved * PEOPLE_PER_PASSENGER);
+      label.text = people >= 1000 ? `${(people / 1000).toFixed(people >= 10000 ? 0 : 1)}k` : String(people);
+      label.position.set(h.x, h.y);
+      label.visible = true;
+    }
+    for (const [key, l] of this.hexLabels) if (!seen.has(key)) l.visible = false;
   }
 
   private drawQueues(): void {
@@ -171,7 +265,7 @@ export class TransitRenderer {
     g.clear();
     const zoom = this.world.zoom;
     const k = this.k;
-    const r = Math.max(1.1, 1.6 / zoom);
+    const r = Math.max(1.4, 2.4 / zoom);
     for (const s of this.game.net.stops.values()) {
       const n = s.queue.length;
       let label = this.labels.get(s.id);
@@ -183,11 +277,12 @@ export class TransitRenderer {
         label.visible = true;
       } else if (label) label.visible = false;
       const shown = Math.min(n, 18);
-      const crowded = n > 25;
+      const D = this.game.demand.districts.list;
       for (let i = 0; i < shown; i++) {
         const col = i % 6, row = Math.floor(i / 6);
-        const x = s.x + 8 * k + col * (r * 2.4), y = s.y + 5 * k - row * (r * 2.4);
-        g.circle(x, y, r).fill(crowded ? 0xd23b33 : this.ink);
+        const x = s.x + 8 * k + col * (r * 2.3), y = s.y + 5 * k - row * (r * 2.3);
+        // cada viajero lleva el color del barrio al que va
+        g.circle(x, y, r).fill(D[s.queue[i].dest]?.color ?? this.ink).stroke({ color: this.ink, width: Math.max(0.4, r * 0.3), alpha: 0.8 });
       }
       if (s.frustrated > 0.5) g.circle(s.x, s.y, (9 + s.frustrated * 0.6) * k).stroke({ color: 0xd23b33, width: 1.5 * k, alpha: Math.min(0.8, s.frustrated * 0.15) });
     }
@@ -228,7 +323,8 @@ export class TransitRenderer {
   private updateVehicles(): void {
     const seen = new Set<Vehicle>();
     const zoom = this.world.zoom;
-    const grow = Math.max(1, 2.2 / (zoom * 3.2));
+    // los vehículos nunca bajan de ~24 px de largo (bus) para que se vean al alejar la cámara
+    const grow = Math.max(1, 2.2 / zoom);
     for (const line of this.game.net.lines.values()) {
       for (const v of line.vehicles) {
         seen.add(v);
@@ -251,7 +347,7 @@ export class TransitRenderer {
         const fullness = v.passengers.length / cap;
         sp.full.visible = fullness >= 0.9;
         sp.full.position.set(v.x, v.y - 5 * grow);
-        sp.full.scale.set((0.35 * grow) / 1);
+        sp.full.scale.set(0.4 * grow);
       }
     }
     for (const [v, sp] of this.vehicleSprites) if (!seen.has(v)) { sp.body.destroy(); sp.full.destroy(); this.vehicleSprites.delete(v); }
@@ -266,17 +362,7 @@ export class TransitRenderer {
       const age = (now - u.t) / 25;
       const a = Math.max(0, 1 - age);
       const color = u.reason === 'route' ? 0xf0bf3c : u.reason === 'fare' ? 0x8e5bb5 : 0xe88a82;
-      g.circle(u.x, u.y - (1 - a) * 6, r).fill({ color, alpha: a * 0.9 }).stroke({ color: this.ink, width: 0.6, alpha: a });
-    }
-  }
-
-  private drawHeat(): void {
-    const g = this.heatG;
-    g.clear();
-    const pts = this.game.demand.heatPoints(this.game.data);
-    for (const p of pts) {
-      const v = Math.min(1, p.v / 6);
-      g.circle(p.x, p.y, 25 + v * 40).fill({ color: 0xd23b33, alpha: 0.08 + v * 0.25 });
+      g.circle(u.x, u.y - (1 - a) * 6, r).fill({ color, alpha: a * 0.9 });
     }
   }
 
@@ -303,6 +389,12 @@ export class TransitRenderer {
     if (hover) target.circle(hover.x, hover.y, 11 * k).stroke({ color: valid ? line.color : 0xd23b33, width: 2.5 * k });
     for (const sid of line.stops) { const s = this.game.net.stops.get(sid)!; target.circle(s.x, s.y, 10 * k).stroke({ color: line.color, width: 1.5 * k, alpha: 0.7 }); }
   }
+}
+
+function lerpColor(a: number, b: number, t: number): number {
+  t = Math.max(0, Math.min(1, t));
+  const ch = (sh: number) => Math.round(((a >> sh) & 255) + (((b >> sh) & 255) - ((a >> sh) & 255)) * t);
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
 }
 
 /** Desplaza una polilínea lateralmente (para que varias líneas por la misma calle no se tapen). */

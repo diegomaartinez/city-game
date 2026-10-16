@@ -52,6 +52,7 @@ export function buildQuery(lat: number, lon: number, radius: number, coastRadius
   way["waterway"="riverbank"]${a};
   way["amenity"~"^(hospital|school|police|fire_station|university|college)$"]${a};
   way["natural"="coastline"]${bboxFilter(lat, lon, coastRadius * 1.15 + 300)};
+  node["place"~"^(neighbourhood|quarter|suburb)$"]${a};
 );
 out geom;`;
 }
@@ -69,6 +70,7 @@ export function buildRingQuery(lat: number, lon: number, radius: number): string
   way["natural"~"^(water|wood)$"]${a};
   relation["natural"="water"]${a};
   way["waterway"="riverbank"]${a};
+  node["place"~"^(neighbourhood|quarter|suburb)$"]${a};
 );
 out geom;`;
 }

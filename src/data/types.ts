@@ -48,6 +48,9 @@ export interface Landuse { kind: LanduseKind; poly: Pt[]; bbox: [number, number,
 /** Zona de uso del suelo (fuera del núcleo detallado hace de "edificios": población y empleos por hectárea). */
 export interface Zone { id: number; kind: LanduseKind; poly: Pt[]; area: number; cx: number; cy: number }
 
+/** Barrio o distrito con nombre (nodo place de OSM), para dar nombre a los barrios del juego. */
+export interface PlaceNode { name: string; kind: 'neighbourhood' | 'quarter' | 'suburb'; x: number; y: number }
+
 export interface CityData {
   name: string;
   lat: number;
@@ -60,13 +63,15 @@ export interface CityData {
   buildings: Building[];
   areas: Area[];
   zones: Zone[];
+  /** Barrios con nombre (nodos place). */
+  places?: PlaceNode[];
   /** Momento de descarga (ms). */
   fetchedAt: number;
   /** Versión del formato; si cambia, la ciudad se vuelve a descargar. */
   version?: number;
 }
 
-export const CITY_VERSION = 3;
+export const CITY_VERSION = 4;
 /** Radio máximo con edificios detallados. */
 export const CORE_RADIUS = 3000;
 /** Margen (m) que se añade al radio para formar la isla jugable. */

@@ -15,14 +15,14 @@ async function play(start: StartResult): Promise<void> {
   const world = new World();
   await world.init(document.body);
 
-  const game = new Game(start.city);
+  const game = new Game(start.city, start.mode);
   const style = loadStyle();
   const map = new MapRenderer(world, start.city, game.graph);
   map.drawAll(style);
   const transit = new TransitRenderer(world, game);
   transit.setStyle(style);
   const tools = new Tools(world, game, map, transit);
-  const hud = new Hud(game, tools);
+  const hud = new Hud(game, tools, world);
   hud.style = style;
   hud.onStyle = s => { saveStyle(s); map.drawAll(s); transit.setStyle(s); };
   if (start.save) game.loadSave(start.save as SaveData);
@@ -36,20 +36,28 @@ async function play(start: StartResult): Promise<void> {
 
   const save = async () => { try { await cache.putSave(start.key, game.toSave()); } catch { /* sin espacio o modo privado */ } };
   let running = true;
+  const teardown = () => {
+    running = false;
+    world.app.ticker.stop();
+    hud.destroy();
+    world.app.destroy(true, { children: true });
+  };
   hud.onMenu = async action => {
     if (action === 'save') { await save(); hud.toast('Partida guardada', 'good'); }
-    if (action === 'exit') {
-      running = false;
-      world.app.ticker.stop();
-      hud.destroy();
-      world.app.destroy(true, { children: true });
-      void main();
+    if (action === 'exit') { teardown(); void main(); }
+    if (action === 'creative') {
+      // misma red, mismo día, pero sin límite de dinero
+      const s = game.toSave();
+      s.mode = 'creativo'; s.over = false; s.debt = 0; s.redDays = 0;
+      teardown();
+      await cache.putSave(start.key, s).catch(() => undefined);
+      void play({ ...start, mode: 'creativo', save: s });
     }
   };
 
   if (!start.save) {
-    hud.toast(`Bienvenido a ${start.city.name}: ${game.demand.population.toLocaleString('es-ES')} vecinos esperan transporte. Pulsa H para ver cómo se juega.`, 'info');
-    setTimeout(() => hud.toast('Empieza con B (parada de bus) junto a las calles y traza una línea con L.', 'info'), 5000);
+    hud.toast(`Bienvenido a ${start.city.name}: ${game.demand.population.toLocaleString('es-ES')} vecinos esperan transporte. El botón «?» explica cómo se juega.`, 'info');
+    setTimeout(() => hud.toast('Empieza poniendo paradas de bus junto a las calles y traza una línea que las una.', 'info'), 5000);
   }
 
   let saveTimer = 0, hudTimer = 0;
@@ -62,6 +70,7 @@ async function play(start: StartResult): Promise<void> {
       for (let i = 0; i < steps; i++) game.tick((dt * speed) / steps);
     }
     transit.update(dt, game.now);
+    hud.placeFichas();
     map.cull();
     hudTimer += dt;
     if (hudTimer > 0.25) { hudTimer = 0; hud.refresh(); }
