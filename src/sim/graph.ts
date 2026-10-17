@@ -12,7 +12,13 @@ export interface GEdge {
 
 export const ROAD_WIDTH: Record<RoadClass, number> = { motorway: 20, primary: 15, secondary: 12, tertiary: 10, residential: 8, service: 5, pedestrian: 4.5 };
 /** Velocidad relativa de cada clase de vía para elegir rutas (los buses prefieren avenidas). */
-export const ROAD_SPEED: Record<RoadClass, number> = { motorway: 20, primary: 14, secondary: 12, tertiary: 11, residential: 9, service: 6, pedestrian: 0 };
+/** Velocidad relativa por clase de calle para elegir ruta: las calles principales apenas se prefieren
+ * a las residenciales, para que el bus vaya por el camino corto de verdad y no dé rodeos por avenidas. */
+export const ROAD_SPEED: Record<RoadClass, number> = { motorway: 20, primary: 11.5, secondary: 11, tertiary: 10.5, residential: 9, service: 6.5, pedestrian: 0 };
+/** Penalización por circular en contra de un sentido único (solo compensa en tramos muy cortos, p. ej. junto a una parada). */
+export const WRONG_WAY = 6;
+/** Radio (m) alrededor de origen y destino donde ir a contramano apenas penaliza. */
+export const NEAR_STOP = 90;
 export const DRIVABLE = (cls: RoadClass) => cls !== 'pedestrian' && cls !== 'motorway';
 
 export const HASH = 60; // metros por celda del índice espacial
@@ -165,8 +171,11 @@ export class RoadGraph {
   route(from: number, to: number, maxExpand = 60000, ignoreOneway = false): number[] | null {
     if (from === to) return [];
     const { nodes, edges } = this;
-    const goal = nodes[to];
-    const h = (n: number) => Math.hypot(nodes[n].x - goal.x, nodes[n].y - goal.y) / 26;
+    const goal = nodes[to], start = nodes[from];
+    const h = (n: number) => Math.hypot(nodes[n].x - goal.x, nodes[n].y - goal.y) / 11.5;
+    // junto a las paradas (origen y destino) se puede ir a contramano casi sin castigo: el bus "cruza"
+    // a la calzada contraria o usa la parada de enfrente, en vez de dar la vuelta a la manzana
+    const nearEnds = (n: number) => Math.hypot(nodes[n].x - start.x, nodes[n].y - start.y) < NEAR_STOP || Math.hypot(nodes[n].x - goal.x, nodes[n].y - goal.y) < NEAR_STOP;
     const dist = new Map<number, number>();
     const via = new Map<number, number>();
     const heap = new MinHeap();
@@ -180,9 +189,10 @@ export class RoadGraph {
       for (const ei of nodes[n].adj) {
         const e = edges[ei];
         if (e.removed || !DRIVABLE(e.cls)) continue;
-        if (e.oneway && e.a !== n && !ignoreOneway) continue;
         const m = e.a === n ? e.b : e.a;
-        const cost = (e.len / ROAD_SPEED[e.cls]) * (e.oneway && e.a !== n ? 3 : 1);
+        // a contramano: permitido con una penalización fuerte (y suave si ya se ha renunciado a los sentidos)
+        const wrong = e.oneway && e.a !== n;
+        const cost = (e.len / ROAD_SPEED[e.cls]) * (wrong ? (ignoreOneway ? 3 : nearEnds(n) && nearEnds(m) ? 1.3 : WRONG_WAY) : 1);
         const nd = dn + cost;
         if (nd < (dist.get(m) ?? Infinity)) { dist.set(m, nd); via.set(m, ei); heap.push(nd + h(m), m); }
       }

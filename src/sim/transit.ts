@@ -1,6 +1,6 @@
 // Red de transporte: paradas, líneas, vehículos y viajeros, con búsqueda de rutas por la red.
 import type { Pt } from '../data/types.ts';
-import { DRIVABLE, HASH, ROAD_WIDTH, RoadGraph } from './graph.ts';
+import { DRIVABLE, HASH, NEAR_STOP, ROAD_WIDTH, RoadGraph } from './graph.ts';
 
 export type Mode = 'bus' | 'metro';
 
@@ -348,16 +348,21 @@ export class Network {
       const from = nodes[k], to = nodes[k + 1];
       if (from === to) continue;
       // primero respetando los sentidos únicos; si no hay forma, en contra dirección; si tampoco, en recta
-      let path = this.graph.route(from, to, 40000);
-      if (!path) { path = this.graph.route(from, to, 40000, true); if (path) line.warnings++; }
+      // primero con los sentidos únicos (a contramano solo en tramos cortísimos, penalizado); si no hay forma, sin ellos; si tampoco, en recta
+      let path = this.graph.route(from, to, 60000);
+      if (!path) path = this.graph.route(from, to, 60000, true);
       if (!path) { line.warnings++; straight = true; const n = this.graph.nodes[to]; pts.push({ x: n.x, y: n.y }); continue; }
-      let cur = from;
+      let cur = from, wrong = false;
+      const A = this.graph.nodes[from], B = this.graph.nodes[to];
+      const farFromStops = (n: number) => { const p = this.graph.nodes[n]; return Math.hypot(p.x - A.x, p.y - A.y) >= NEAR_STOP && Math.hypot(p.x - B.x, p.y - B.y) >= NEAR_STOP; };
       for (const ei of path) {
         const e = this.graph.edges[ei];
+        if (e.oneway && e.a !== cur && farFromStops(cur)) wrong = true;
         cur = e.a === cur ? e.b : e.a;
         const n = this.graph.nodes[cur];
         pts.push({ x: n.x, y: n.y });
       }
+      if (wrong) line.warnings++;
     }
     pts[pts.length - 1] = { x: b.rx, y: b.ry };
     return mk(pts, straight);
