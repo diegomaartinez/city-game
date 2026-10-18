@@ -21,6 +21,9 @@ export const OVERPASS_SERVERS = [
   'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
+  'https://overpass.osm.jp/api/interpreter',
 ];
 
 export const HIGHWAY_CLASSES = [
@@ -115,7 +118,8 @@ export async function fetchOsm(
       signal?.addEventListener('abort', onAbort);
       const timer = setTimeout(() => ctrl.abort(), 300_000);
       try {
-        const r = await fetch(server, { method: 'POST', body, signal: ctrl.signal, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        // el navegador ignora User-Agent; en Node (construcción de niveles) identifica al proyecto, como pide la política de uso de Overpass
+        const r = await fetch(server, { method: 'POST', body, signal: ctrl.signal, headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'LittleTransit/1.0 (+https://github.com/diegomaartinez/city-game)' } });
         if (!r.ok || !r.body) { errors.push(`${host}: HTTP ${r.status}`); continue; }
         const reader = r.body.getReader();
         const chunks: Uint8Array[] = [];

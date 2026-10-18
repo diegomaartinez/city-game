@@ -20,13 +20,22 @@ const canBox = bboxOf(CANARIAS.south, CANARIAS.west, CANARIAS.north, CANARIAS.ea
 // maxsize solo en la consulta grande (y por debajo del tope de overpass-api.de, que responde 406 si se pasa)
 const q = (body: string, timeout = 300, maxsize = 0) => `[out:json][timeout:${timeout}]${maxsize ? `[maxsize:${maxsize}]` : ''};\n(\n${body}\n);\nout geom;`;
 const log = (p: { phase: string; bytes: number; server: string }) => { if (p.phase === 'downloading' && p.bytes % 10_000_000 < 300_000) console.log(`  ${p.server} ${(p.bytes / 1e6).toFixed(0)} MB`); };
+/** Los servidores públicos limitan por IP y los runners de GitHub van muy usados: se insiste con pausas largas. */
+async function fetchPatient(query: string): Promise<OsmResponse> {
+  let last: Error | null = null;
+  for (let i = 0; i < 4; i++) {
+    try { return await fetchOsm(query); } catch (e) { last = e as Error; console.log(`  intento ${i + 1} fallido: ${last.message.slice(0, 200)}`); }
+    await new Promise(r => setTimeout(r, 90_000));
+  }
+  throw last;
+}
 
 console.log('ciudades…');
-const citiesRes: OsmResponse = await fetchOsm(q(`node["place"~"^(city|town)$"]["population"]${frameBox};\n  node["place"~"^(city|town)$"]["population"]${canBox};\n  node["place"~"^(city|town)$"]["capital"]${frameBox};`), log);
+const citiesRes: OsmResponse = await fetchPatient(q(`node["place"~"^(city|town)$"]["population"]${frameBox};\n  node["place"~"^(city|town)$"]["population"]${canBox};\n  node["place"~"^(city|town)$"]["capital"]${frameBox};`));
 console.log('aeropuertos…');
-const airRes: OsmResponse = await fetchOsm(q(`nwr["aeroway"="aerodrome"]["iata"]${frameBox};\n  nwr["aeroway"="aerodrome"]["iata"]${canBox};`), log);
+const airRes: OsmResponse = await fetchPatient(q(`nwr["aeroway"="aerodrome"]["iata"]${frameBox};\n  nwr["aeroway"="aerodrome"]["iata"]${canBox};`));
 console.log('autopistas…');
-const roadRes: OsmResponse = await fetchOsm(q(`way["highway"~"^(motorway|trunk)$"]${frameBox};\n  way["highway"~"^(motorway|trunk)$"]${canBox};`, 900, 1_000_000_000), log);
+const roadRes: OsmResponse = await fetchPatient(q(`way["highway"~"^(motorway|trunk)$"]${frameBox};\n  way["highway"~"^(motorway|trunk)$"]${canBox};`, 900, 1_000_000_000));
 
 // ciudades
 const cities: City[] = [];
