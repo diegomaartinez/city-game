@@ -7,13 +7,13 @@ import zlib from 'node:zlib';
 import { fetchOsm, bboxOf, type OsmResponse } from '../src/data/overpass.ts';
 import { CITY_VERSION, type City, type Pt, type RoadWay } from '../src/data/types.ts';
 import { Game } from '../src/sim/game.ts';
-import { ALWAYS, CANARIAS, FRAME, MIN_POP, borders, coast, finishCities, foreign, inCanarias, land, makeLevel, place } from './country-geo.ts';
+import { ALWAYS, CANARIAS, FRAME, INSET, toXY, MIN_POP, borders, coast, countryAt, nearestOwn, simplifyRoads, finishCities, foreign, inCanarias, land, makeLevel, place } from './country-geo.ts';
 
 const root = path.resolve(new URL('..', import.meta.url).pathname);
 const outDir = path.join(root, 'public', 'levels');
 const indexPath = path.join(outDir, 'index.json');
 /** Cambia al cambiar la definición del nivel: fuerza la reconstrucción. */
-const DEF = 'iberia-v2';
+const DEF = 'iberia-v3';
 const force = process.argv.includes('--force');
 {
   const index: Array<Record<string, unknown>> = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')) : [];
@@ -23,6 +23,7 @@ const force = process.argv.includes('--force');
 console.log(`tierra: ${land.length} polígonos propios, ${foreign.length} vecinos, ${borders.length} fronteras, ${coast.length} tramos de costa`);
 
 // ───────────── OpenStreetMap ─────────────
+const insetNW = toXY(INSET.west, INSET.north), insetSE = toXY(INSET.east, INSET.south);
 const frameBox = bboxOf(FRAME.south, FRAME.west, FRAME.north, FRAME.east);
 const canBox = bboxOf(CANARIAS.south, CANARIAS.west, CANARIAS.north, CANARIAS.east);
 // maxsize solo en la consulta grande (y por debajo del tope de overpass-api.de, que responde 406 si se pasa)
@@ -39,7 +40,7 @@ async function fetchPatient(query: string): Promise<OsmResponse> {
 }
 
 console.log('ciudades…');
-const citiesRes: OsmResponse = await fetchPatient(q(`node["place"~"^(city|town)$"]["population"]${frameBox};\n  node["place"~"^(city|town)$"]["population"]${canBox};\n  node["place"~"^(city|town)$"]["capital"]${frameBox};`));
+const citiesRes: OsmResponse = await fetchPatient(q(`node["place"~"^(city|town)$"]["population"]${frameBox};\n  node["place"~"^(city|town)$"]${canBox};\n  node["place"~"^(city|town)$"]["capital"]${frameBox};`));
 console.log('aeropuertos…');
 const airRes: OsmResponse = await fetchPatient(q(`nwr["aeroway"="aerodrome"]["iata"]${frameBox};\n  nwr["aeroway"="aerodrome"]["iata"]${canBox};`));
 console.log('autopistas…');
@@ -51,22 +52,27 @@ const popOf = (s: string | undefined) => { const n = parseInt((s ?? '').replace(
 for (const el of citiesRes.elements) {
   if (el.type !== 'node' || el.lat === undefined || el.lon === undefined || !el.tags?.name) continue;
   const t = el.tags;
-  const name = t['name:es'] && t['name:es'] !== t.name && /ES/.test(t['ISO3166-1'] ?? '') ? t.name : t.name;
+  // nombres bilingües ("Alacant / Alicante", "Gijón / Xixón"): se queda la forma castellana si es una de las dos
+  const parts = t.name.split(' / ').map(s => s.trim());
+  const es = t['name:es'];
+  const name = parts.length > 1 && es && parts.includes(es) ? es : t.name;
   const pop = popOf(t.population);
   const always = ALWAYS.includes(name) || ALWAYS.includes(t['name:es'] ?? '') || ALWAYS.includes(t['name:ca'] ?? '');
   if (pop < MIN_POP && !always) continue;
   const p = place(el.lon, el.lat);
   if (!p) continue;
   const inset = inCanarias(el.lon, el.lat);
-  // país por el polígono que lo contiene (aprox. por nombre de país en etiquetas, si no, por posición)
-  const cc = t['is_in:country_code'] ?? t['addr:country'] ?? guessCountry(el.lon, el.lat);
+  // el recuadro de Canarias tapa la costa argelina: lo que cae ahí sin ser canario no entra
+  if (!inset && p.x >= insetNW.x && p.x <= insetSE.x && p.y >= insetNW.y && p.y <= insetSE.y) continue;
+  // solo ciudades en tierra propia (España, Portugal, Andorra): las de Francia, Marruecos y Argelia quedan fuera.
+  // Los polígonos de Natural Earth son gruesos: una ciudad costera puede caer "en el mar" (Lisboa) y una fronteriza
+  // en el país vecino (Irun); valen si la tierra propia está a menos de 6 km (mar) o 3 km (vecino).
+  let cc = countryAt(p);
+  if (cc === null || cc === 'XX') {
+    const n = nearestOwn(p);
+    if (n.dist < (cc === null ? 6000 : 3000) * (inset ? 0.8 : 1) || always) cc = n.country; else continue;
+  }
   cities.push({ id: el.id, name, x: p.x, y: p.y, lat: el.lat, lon: el.lon, pop: Math.max(pop, 20_000), airport: false, coastal: false, country: cc, inset: inset || undefined });
-}
-
-function guessCountry(lon: number, lat: number): string {
-  if (lon < -6.2 && lat < 42.15 && lat > 36.9 && !(lat < 37.3 && lon > -7.5)) return 'PT';
-  if (lon > 1.4 && lon < 1.8 && lat > 42.4 && lat < 42.7) return 'AD';
-  return 'ES';
 }
 
 // aeropuertos (centro de la pista) → ciudad más cercana
@@ -81,17 +87,22 @@ for (const el of airRes.elements) {
 const kept = finishCities(cities, airportPts);
 console.log(`ciudades: ${cities.length} candidatas → ${kept.length} · aeropuertos: ${kept.filter(c => c.airport).length} · costeras: ${kept.filter(c => c.coastal).length}`);
 
-// autopistas → RoadWay (clase 'primary' para que el bus pueda circular; trunk → 'secondary')
-const roads: RoadWay[] = [];
-for (const el of roadRes.elements) {
-  if (el.type !== 'way' || !el.geometry || !el.nodes) continue;
+// autopistas → RoadWay (clase 'primary' para que el bus pueda circular; trunk → 'secondary').
+// Fuera las de los países vecinos, y se simplifica la geometría (a esta escala 40 m no se ven) sin tocar los cruces.
+const ways = roadRes.elements.filter(el => el.type === 'way' && el.geometry && el.nodes && el.geometry.length >= 2);
+const nodeUses = new Map<number, number>();
+for (const el of ways) for (const n of el.nodes!) nodeUses.set(n, (nodeUses.get(n) ?? 0) + 1);
+const raw: RoadWay[] = [];
+for (const el of ways) {
   const t = el.tags ?? {};
   const pts: Pt[] = [], nodes: number[] = [];
-  el.geometry.forEach((g, i) => { const p = place(g.lon, g.lat); if (p) { pts.push(p); nodes.push(el.nodes![i]); } });
+  el.geometry!.forEach((g, i) => { const p = place(g.lon, g.lat); if (p) { pts.push(p); nodes.push(el.nodes![i]); } });
   if (pts.length < 2) continue;
-  roads.push({ id: el.id, cls: t.highway === 'motorway' ? 'primary' : 'secondary', name: t.ref ?? t.name, oneway: t.oneway === 'yes' || t.highway === 'motorway', pts, nodes, layer: 0 });
+  if (countryAt(pts[Math.floor(pts.length / 2)]) === 'XX') continue;
+  raw.push({ id: el.id, cls: t.highway === 'motorway' ? 'primary' : 'secondary', name: t.ref ?? t.name, oneway: t.oneway === 'yes' || t.highway === 'motorway', pts, nodes, layer: 0 });
 }
-console.log(`autopistas: ${roads.length} tramos, ${roads.reduce((a, r) => a + r.pts.length, 0)} puntos`);
+const roads = simplifyRoads(raw, nodeUses, 40);
+console.log(`autopistas: ${raw.length} tramos, ${raw.reduce((a, r) => a + r.pts.length, 0)} puntos → ${roads.length} tramos, ${roads.reduce((a, r) => a + r.pts.length, 0)} puntos`);
 
 // ───────────── nivel ─────────────
 const city = makeLevel(kept, roads);

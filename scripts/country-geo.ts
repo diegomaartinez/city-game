@@ -4,6 +4,7 @@ import * as topojson from 'topojson-client';
 import type { Topology, GeometryCollection } from 'topojson-specification';
 import { Projection } from '../src/data/geo.ts';
 import { simplify } from '../src/data/compact.ts';
+import { pointInPoly } from '../src/data/geo.ts';
 import { CITY_VERSION, type City, type CityData, type Pt, type RoadWay } from '../src/data/types.ts';
 import { SeaGrid } from '../src/sim/sea.ts';
 
@@ -39,6 +40,8 @@ export const place = (lon: number, lat: number): Pt | null => {
 const topo = require('world-atlas/countries-10m.json') as Topology<{ countries: GeometryCollection<{ name: string }> }>;
 const countries = topojson.feature(topo, topo.objects.countries);
 export const land: Pt[][] = [], foreign: Pt[][] = [];
+/** País (código) de cada polígono de `land`, en el mismo orden. */
+export const landCountry: string[] = [];
 const polysOf = (g: GeoJSON.Geometry): number[][][][] => g.type === 'Polygon' ? [g.coordinates as number[][][]] : g.type === 'MultiPolygon' ? (g.coordinates as number[][][][]) : [];
 for (const f of countries.features) {
   const name = f.properties?.name ?? '';
@@ -53,7 +56,7 @@ for (const f of countries.features) {
     const pts = ring.map(([lo, la]) => inCanarias(cx, cy) ? toXY(...insetLonLat(lo, la)) : toXY(lo, la));
     const simp = simplify(pts, 150);
     if (simp.length < 4) continue;
-    (OWN.has(name) ? land : foreign).push(simp);
+    if (OWN.has(name)) { land.push(simp); landCountry.push(COUNTRY_CODE[name] ?? 'ES'); } else foreign.push(simp);
   }
 }
 // fronteras terrestres entre países (arcos compartidos) y costa (arcos no compartidos)
@@ -67,6 +70,30 @@ export const coast = [...lines(coastMesh, false), ...lines(coastMesh, true)];
 console.log(`tierra: ${land.length} polígonos propios, ${foreign.length} vecinos, ${borders.length} fronteras, ${coast.length} tramos de costa`);
 
 
+/** Código de país de un punto según los polígonos de Natural Earth: propio, 'XX' si es vecino, null si cae en el mar. */
+export function countryAt(p: Pt): string | null {
+  for (let i = 0; i < land.length; i++) if (pointInPoly(p.x, p.y, land[i])) return landCountry[i];
+  for (const f of foreign) if (pointInPoly(p.x, p.y, f)) return 'XX';
+  return null;
+}
+
+/** País del polígono propio más cercano a un punto y a qué distancia está (m). */
+export function nearestOwn(p: Pt): { country: string; dist: number } {
+  let best = 'ES', bd = Infinity;
+  for (let i = 0; i < land.length; i++) {
+    const l = land[i];
+    for (let j = 0; j < l.length; j++) { const d = segDist(p, l[j], l[(j + 1) % l.length]); if (d < bd) { bd = d; best = landCountry[i]; } }
+  }
+  return { country: best, dist: bd };
+}
+
+/** Distancia de un punto a la costa propia (m). */
+export function coastDist(p: Pt): number {
+  let md = Infinity;
+  for (const l of coast) for (let i = 0; i + 1 < l.length; i++) { const d = segDist(p, l[i], l[i + 1]); if (d < md) md = d; }
+  return md;
+}
+
 export function segDist(p: Pt, a: Pt, b: Pt): number {
   const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
   const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2)) : 0;
@@ -78,16 +105,14 @@ export function finishCities(cities: City[], airportPts: Pt[]): City[] {
   cities.sort((a, b) => b.pop - a.pop);
   const kept: City[] = [];
   for (const c of cities) if (!kept.some(k => k.name === c.name || Math.hypot(k.x - c.x, k.y - c.y) < 8000)) kept.push(c);
+  // un aeropuerto es de la ciudad más grande a menos de 35 km (Barajas es de Madrid, no de Torrejón) y de las que tiene al lado
   for (const p of airportPts) {
-    let best: City | null = null, bd = 35_000;
-    for (const c of kept) { const d = Math.hypot(c.x - p.x, c.y - p.y) / (c.inset ? insetScale : 1); if (d < bd) { bd = d; best = c; } }
-    if (best) best.airport = true;
+    const near = kept.filter(c => Math.hypot(c.x - p.x, c.y - p.y) / (c.inset ? insetScale : 1) < 35_000);
+    if (!near.length) continue;
+    near.reduce((a, b) => (b.pop > a.pop ? b : a)).airport = true;
+    for (const c of near) if (Math.hypot(c.x - p.x, c.y - p.y) / (c.inset ? insetScale : 1) < 10_000) c.airport = true;
   }
-  for (const c of kept) {
-    let md = Infinity;
-    for (const l of coast) for (let i = 0; i + 1 < l.length; i++) { const d = segDist(c, l[i], l[i + 1]); if (d < md) md = d; }
-    c.coastal = md < 15000 * (c.inset ? insetScale : 1);
-  }
+  for (const c of kept) c.coastal = coastDist(c) < 15000 * (c.inset ? insetScale : 1);
   return kept;
 }
 
@@ -103,4 +128,54 @@ export function makeLevel(cities: City[], roads: RoadWay[]): CityData {
     map: { land, foreign, borders, inset: { x0: i0.x, y0: i0.y, x1: i1.x, y1: i1.y, label: 'Canarias' }, sea },
     fetchedAt: Date.now(), version: CITY_VERSION,
   };
+}
+
+/** Une los tramos consecutivos iguales (OSM parte las autopistas en trozos cortos) y simplifica la geometría sin tocar los cruces. */
+export function simplifyRoads(raw: RoadWay[], nodeUses: Map<number, number>, tol: number): RoadWay[] {
+  const same = (a: RoadWay, b: RoadWay) => a.cls === b.cls && a.oneway === b.oneway && a.name === b.name;
+  const startAt = new Map<number, RoadWay[]>();
+  for (const w of raw) { const n = w.nodes[0]; const l = startAt.get(n); if (l) l.push(w); else startAt.set(n, [w]); }
+  const used = new Set<RoadWay>();
+  const joined = new Set<number>(); // nodos que eran unión de dos tramos y ya no son cruce
+  const merged: RoadWay[] = [];
+  for (const w of raw) {
+    if (used.has(w)) continue;
+    used.add(w);
+    const pts = w.pts.slice(), nodes = w.nodes.slice();
+    for (;;) {
+      const end = nodes[nodes.length - 1];
+      // el nodo final solo lo usan este tramo y el que empieza ahí
+      if ((nodeUses.get(end) ?? 0) !== 2) break;
+      const next = (startAt.get(end) ?? []).find(x => !used.has(x) && x !== w && same(w, x));
+      if (!next) break;
+      used.add(next); joined.add(end);
+      pts.push(...next.pts.slice(1)); nodes.push(...next.nodes.slice(1));
+    }
+    merged.push({ ...w, pts, nodes });
+  }
+  return merged.map(w => {
+    const keep = simplifyKeep(w.pts, tol, i => i === 0 || i === w.pts.length - 1 || (nodeUses.get(w.nodes[i]) ?? 0) > 1 && !joined.has(w.nodes[i]));
+    return { ...w, pts: w.pts.filter((_, i) => keep[i]), nodes: w.nodes.filter((_, i) => keep[i]) };
+  });
+}
+
+/** Douglas-Peucker por tramos entre puntos obligatorios (cruces): devuelve qué puntos se conservan. */
+export function simplifyKeep(pts: Pt[], tol: number, forced: (i: number) => boolean): Uint8Array {
+  const keep = new Uint8Array(pts.length);
+  for (let i = 0; i < pts.length; i++) if (forced(i)) keep[i] = 1;
+  const stack: Array<[number, number]> = [];
+  let last = 0;
+  for (let i = 1; i < pts.length; i++) if (keep[i]) { stack.push([last, i]); last = i; }
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    const A = pts[a], B = pts[b], dx = B.x - A.x, dy = B.y - A.y, l2 = dx * dx + dy * dy;
+    let best = -1, bd = tol;
+    for (let i = a + 1; i < b; i++) {
+      const P = pts[i], u = l2 ? Math.max(0, Math.min(1, ((P.x - A.x) * dx + (P.y - A.y) * dy) / l2)) : 0;
+      const d = Math.hypot(P.x - (A.x + dx * u), P.y - (A.y + dy * u));
+      if (d > bd) { bd = d; best = i; }
+    }
+    if (best >= 0) { keep[best] = 1; stack.push([a, best], [best, b]); }
+  }
+  return keep;
 }
