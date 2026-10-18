@@ -40,7 +40,7 @@ jobs:
         run: |
           if [ ! -f public/levels/iberia.json.gz ] || [ "${{ inputs.force }}" = "true" ] || echo "${{ inputs.levels }}" | grep -q iberia; then
             # el registro se guarda en el repo para poder leerlo sin entrar en Actions
-            node --experimental-transform-types scripts/build-country.ts 2>&1 | tee levels/iberia-build.log
+            node --experimental-transform-types scripts/build-country.ts 2>&1 | tee levels/iberia-build.txt
             exit ${PIPESTATUS[0]}
           else
             echo "iberia: ya construido"
@@ -50,7 +50,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/levels levels/iberia-build.log
+          git add public/levels levels/iberia-build.txt
           if git diff --cached --quiet; then echo "Sin cambios"; exit 0; fi
           git commit -m "Niveles construidos desde OpenStreetMap"
           git push
