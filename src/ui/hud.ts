@@ -415,8 +415,8 @@ export class Hud {
           ${l.warnings ? `<div class="warn small">${l.warnings} tramo(s) ${l.mode === 'ship' ? 'cruzan tierra: arrastra la línea para rodear la costa' : l.mode === 'bus' && this.game.country ? 'sin autopista' : 'a contramano o sin calle'}</div>` : ''}
           <div class="prow">
             <span>Vehículos</span>
-            <button class="btn small" data-act="veh-">−</button><b>${l.vehicles.length}</b><button class="btn small" data-act="veh+" title="${eur(def.vehicleCost)} + ${eur(def.upkeep)}/día">+</button>
-            <span class="muted small">${eur(def.vehicleCost)}</span>
+            <button class="btn small" data-act="veh-">−</button><b>${l.vehicles.length}</b><button class="btn small" data-act="veh+" title="${money(def.vehicleCost)} + ${money(def.upkeep)}/día">+</button>
+            <span class="muted small">${money(def.vehicleCost)}</span>
           </div>
           <div class="prow">
             ${l.loop ? '' : '<button class="btn small" data-act="extend">Ampliar</button>'}
