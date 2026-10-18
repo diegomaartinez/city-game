@@ -5,6 +5,7 @@ import type { Topology, GeometryCollection } from 'topojson-specification';
 import { Projection } from '../src/data/geo.ts';
 import { simplify } from '../src/data/compact.ts';
 import { CITY_VERSION, type City, type CityData, type Pt, type RoadWay } from '../src/data/types.ts';
+import { SeaGrid } from '../src/sim/sea.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -95,10 +96,11 @@ export function makeLevel(cities: City[], roads: RoadWay[]): CityData {
   const nw = toXY(FRAME.west, FRAME.north), se = toXY(FRAME.east, FRAME.south);
   const halfW = Math.round((se.x - nw.x) / 2), halfH = Math.round((se.y - nw.y) / 2);
   const i0 = toXY(INSET.west, INSET.north), i1 = toXY(INSET.east, INSET.south);
+  const sea = SeaGrid.build([...land, ...foreign], -halfW, -halfH, halfW, halfH, 4000);
   return {
     name: 'España y Portugal', kind: 'country', lat: LAT0, lon: LON0, radius: Math.max(halfW, halfH), halfW, halfH, core: 0,
     roads, buildings: [], areas: [], zones: [], places: [], cities,
-    map: { land, foreign, borders, inset: { x0: i0.x, y0: i0.y, x1: i1.x, y1: i1.y, label: 'Canarias' } },
+    map: { land, foreign, borders, inset: { x0: i0.x, y0: i0.y, x1: i1.x, y1: i1.y, label: 'Canarias' }, sea },
     fetchedAt: Date.now(), version: CITY_VERSION,
   };
 }

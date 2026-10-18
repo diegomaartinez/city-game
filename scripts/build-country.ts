@@ -12,6 +12,14 @@ import { ALWAYS, CANARIAS, FRAME, MIN_POP, borders, coast, finishCities, foreign
 const root = path.resolve(new URL('..', import.meta.url).pathname);
 const outDir = path.join(root, 'public', 'levels');
 const indexPath = path.join(outDir, 'index.json');
+/** Cambia al cambiar la definición del nivel: fuerza la reconstrucción. */
+const DEF = 'iberia-v2';
+const force = process.argv.includes('--force');
+{
+  const index: Array<Record<string, unknown>> = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')) : [];
+  const cur = index.find(l => l.id === 'iberia');
+  if (cur && cur.def === DEF && cur.version === CITY_VERSION && !force && fs.existsSync(path.join(outDir, 'iberia.json.gz'))) { console.log('iberia: ya construido'); process.exit(0); }
+}
 console.log(`tierra: ${land.length} polígonos propios, ${foreign.length} vecinos, ${borders.length} fronteras, ${coast.length} tramos de costa`);
 
 // ───────────── OpenStreetMap ─────────────
@@ -93,7 +101,7 @@ const gz = zlib.gzipSync(Buffer.from(json), { level: 9 });
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, 'iberia.json.gz'), gz);
 const index: Array<Record<string, unknown>> = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')) : [];
-const info = { id: 'iberia', kind: 'country', name: 'España y Portugal', subtitle: 'Toda la península, Baleares, Canarias, Ceuta y Melilla: une sus ciudades en tren, bus, avión y barco.', radius: city.radius, population: game.demand.population, jobs: game.demand.jobCount, buildings: 0, cities: kept.length, districts: game.demand.districts.k, file: 'iberia.json.gz', bytes: gz.length, version: CITY_VERSION, builtAt: new Date().toISOString(), def: 'iberia-v1' };
+const info = { id: 'iberia', kind: 'country', name: 'España y Portugal', subtitle: 'Toda la península, Baleares, Canarias, Ceuta y Melilla: une sus ciudades en tren, bus, avión y barco.', radius: city.radius, population: game.demand.population, jobs: game.demand.jobCount, buildings: 0, cities: kept.length, districts: game.demand.districts.k, file: 'iberia.json.gz', bytes: gz.length, version: CITY_VERSION, builtAt: new Date().toISOString(), def: DEF };
 const i = index.findIndex(l => l.id === 'iberia');
 if (i >= 0) index[i] = info; else index.push(info);
 fs.writeFileSync(indexPath, JSON.stringify(index, null, 2) + '\n');

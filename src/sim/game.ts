@@ -2,6 +2,7 @@
 // quiebra), hitos que desbloquean líneas y metro, estadísticas diarias y guardado.
 import { MARGIN, type CityData } from '../data/types.ts';
 import { pointInPoly } from '../data/geo.ts';
+import { SeaGrid } from './sea.ts';
 import { RoadGraph } from './graph.ts';
 import { Demand } from './demand.ts';
 import { CITY_MODES, COUNTRY_MODES, FARES, MODE, Network, PEOPLE_PER_PASSENGER, applyLevelKind, type Line, type Mode, type NetworkStats, type Stop } from './transit.ts';
@@ -153,7 +154,11 @@ export class Game {
     this.money = this.def.start * this.moneyScale;
     this.graph = RoadGraph.fromRoads(data.roads, this.country ? 3000 : undefined);
     this.net = new Network(this.graph);
-    if (this.country) { this.net.cities = data.cities ?? []; this.net.landCheck = pts => this.crossesLand(pts); }
+    if (this.country) {
+      this.net.cities = data.cities ?? [];
+      this.net.landCheck = pts => this.crossesLand(pts);
+      if (data.map?.sea) { const grid = new SeaGrid(data.map.sea); this.net.seaRoute = (a, b) => grid.route(a, b); }
+    }
     this.demand = new Demand(data, this.net, this.graph);
     this.dayStart = { ...this.net.stats };
     // los objetivos van en proporción a los viajes potenciales diarios (la cuota de población se definió para la ciudad)

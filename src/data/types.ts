@@ -81,6 +81,8 @@ export interface CountryMap {
   borders: Pt[][];
   /** Recuadro del inset (Canarias) en metros locales, y su etiqueta. */
   inset?: { x0: number; y0: number; x1: number; y1: number; label: string };
+  /** Rejilla de tierra/mar para que los barcos bordeen la costa. */
+  sea?: { cell: number; x0: number; y0: number; cols: number; rows: number; land: string };
 }
 
 export interface CityData {

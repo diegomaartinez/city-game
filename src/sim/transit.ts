@@ -157,6 +157,8 @@ export class Network {
   cities: City[] | null = null;
   /** Nivel de país: ¿cruza tierra este trazado? (para avisar en las líneas de barco). */
   landCheck: ((pts: Pt[]) => boolean) | null = null;
+  /** Nivel de país: ruta por el mar entre dos paradas, bordeando la costa. */
+  seaRoute: ((a: Pt, b: Pt) => Pt[] | null) | null = null;
 
   constructor(public graph: RoadGraph) {}
 
@@ -409,10 +411,13 @@ export class Network {
       return { pts, cum, len: trueLen ?? geomLen, geomLen, straight };
     };
     if (line.mode !== 'bus' || a.node < 0 || b.node < 0) {
-      const pts = [{ x: a.x, y: a.y }, ...vias.map(v => ({ ...v })), { x: b.x, y: b.y }];
+      let pts = [{ x: a.x, y: a.y }, ...vias.map(v => ({ ...v })), { x: b.x, y: b.y }];
+      // barco sin puntos de paso: bordea la costa solo
+      let routed = false;
+      if (line.mode === 'ship' && !vias.length && this.seaRoute && this.landCheck?.(pts)) { const r = this.seaRoute(pts[0], pts[1]); if (r && r.length >= 3) { pts = r; routed = true; } }
       const geom = pts.reduce((acc, p, i) => i ? acc + Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y) : 0, 0);
       const real = this.trueDistance(a, b);
-      if (line.mode === 'ship' && this.landCheck?.(pts)) line.warnings++;
+      if (line.mode === 'ship' && !routed && this.landCheck?.(pts)) line.warnings++;
       // en Canarias la distancia dibujada no es la real: el tiempo de viaje se escala
       return mk(pts, true, geom > 0 && Math.abs(real - geom) > 1 ? real * (geom / Math.hypot(a.x - b.x, a.y - b.y) || 1) : undefined);
     }
