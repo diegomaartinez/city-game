@@ -1,10 +1,10 @@
 tierra: 28 polígonos propios, 3 vecinos, 7 fronteras, 24 tramos de costa
 tierra: 28 polígonos propios, 3 vecinos, 7 fronteras, 24 tramos de costa
 ciudades…
-(node:2379) ExperimentalWarning: Transform Types is an experimental feature and might change at any time
+(node:2137) ExperimentalWarning: Transform Types is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
 aeropuertos…
 autopistas…
-ciudades: 229 candidatas → 192 · aeropuertos: 66 · costeras: 68
-autopistas: 142811 tramos, 1328822 puntos
-iberia: 60.3 MB → 13.75 MB gz · 192 ciudades · 34.785.835 hab · 1236 × 1006 km
+ciudades: 153 candidatas → 128 · aeropuertos: 57 · costeras: 60
+autopistas: 128401 tramos, 1127314 puntos → 35558 tramos, 143945 puntos
+iberia: 8.6 MB → 1.96 MB gz · 128 ciudades · 22.293.798 hab · 1236 × 1006 km
