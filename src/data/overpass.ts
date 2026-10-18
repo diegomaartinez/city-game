@@ -12,6 +12,8 @@ export interface OsmElement {
   members?: Array<{ type: 'node' | 'way' | 'relation'; ref: number; role: string; geometry?: Array<{ lat: number; lon: number }> }>;
   lat?: number;
   lon?: number;
+  // way/relation con `out center`
+  center?: { lat: number; lon: number };
 }
 
 export interface OsmResponse { elements: OsmElement[] }

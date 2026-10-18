@@ -13,7 +13,7 @@ const root = path.resolve(new URL('..', import.meta.url).pathname);
 const outDir = path.join(root, 'public', 'levels');
 const indexPath = path.join(outDir, 'index.json');
 /** Cambia al cambiar la definición del nivel: fuerza la reconstrucción. */
-const DEF = 'iberia-v3';
+const DEF = 'iberia-v4';
 const force = process.argv.includes('--force');
 {
   const index: Array<Record<string, unknown>> = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')) : [];
@@ -27,7 +27,7 @@ const insetNW = toXY(INSET.west, INSET.north), insetSE = toXY(INSET.east, INSET.
 const frameBox = bboxOf(FRAME.south, FRAME.west, FRAME.north, FRAME.east);
 const canBox = bboxOf(CANARIAS.south, CANARIAS.west, CANARIAS.north, CANARIAS.east);
 // maxsize solo en la consulta grande (y por debajo del tope de overpass-api.de, que responde 406 si se pasa)
-const q = (body: string, timeout = 300, maxsize = 0) => `[out:json][timeout:${timeout}]${maxsize ? `[maxsize:${maxsize}]` : ''};\n(\n${body}\n);\nout geom;`;
+const q = (body: string, timeout = 300, maxsize = 0, out = 'geom') => `[out:json][timeout:${timeout}]${maxsize ? `[maxsize:${maxsize}]` : ''};\n(\n${body}\n);\nout ${out};`;
 const log = (p: { phase: string; bytes: number; server: string }) => { if (p.phase === 'downloading' && p.bytes % 10_000_000 < 300_000) console.log(`  ${p.server} ${(p.bytes / 1e6).toFixed(0)} MB`); };
 /** Los servidores públicos limitan por IP y los runners de GitHub van muy usados: se insiste con pausas largas. */
 async function fetchPatient(query: string): Promise<OsmResponse> {
@@ -42,7 +42,8 @@ async function fetchPatient(query: string): Promise<OsmResponse> {
 console.log('ciudades…');
 const citiesRes: OsmResponse = await fetchPatient(q(`node["place"~"^(city|town)$"]["population"]${frameBox};\n  node["place"~"^(city|town)$"]${canBox};\n  node["place"~"^(city|town)$"]["capital"]${frameBox};`));
 console.log('aeropuertos…');
-const airRes: OsmResponse = await fetchPatient(q(`nwr["aeroway"="aerodrome"]["iata"]${frameBox};\n  nwr["aeroway"="aerodrome"]["iata"]${canBox};`));
+// `out center`: los aeropuertos grandes suelen ser relaciones (multipolígono), que con `out geom` no traen geometría propia
+const airRes: OsmResponse = await fetchPatient(q(`nwr["aeroway"="aerodrome"]["iata"]${frameBox};\n  nwr["aeroway"="aerodrome"]["iata"]${canBox};`, 300, 0, 'center'));
 console.log('autopistas…');
 const roadRes: OsmResponse = await fetchPatient(q(`way["highway"~"^(motorway|trunk)$"]${frameBox};\n  way["highway"~"^(motorway|trunk)$"]${canBox};`, 900, 1_000_000_000));
 
@@ -78,8 +79,9 @@ for (const el of citiesRes.elements) {
 // aeropuertos (centro de la pista) → ciudad más cercana
 const airportPts: Pt[] = [];
 for (const el of airRes.elements) {
-  let lat = el.lat, lon = el.lon;
-  if (lat === undefined && el.geometry?.length) { lat = el.geometry.reduce((a, p) => a + p.lat, 0) / el.geometry.length; lon = el.geometry.reduce((a, p) => a + p.lon, 0) / el.geometry.length; }
+  // los helipuertos con código IATA (Ceuta, Algeciras) no son aeropuertos
+  if (el.tags?.aerodrome === 'heliport' || el.tags?.['aerodrome:type'] === 'heliport' || /helipuerto|heliport/i.test(el.tags?.name ?? '')) continue;
+  const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
   if (lat === undefined || lon === undefined) continue;
   const p = place(lon, lat);
   if (p) airportPts.push(p);
