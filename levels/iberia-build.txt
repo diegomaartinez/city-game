@@ -1,0 +1,14 @@
+tierra: 28 polígonos propios, 3 vecinos, 7 fronteras, 24 tramos de costa
+tierra: 28 polígonos propios, 3 vecinos, 7 fronteras, 24 tramos de costa
+ciudades…
+(node:2350) ExperimentalWarning: Transform Types is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+/home/runner/work/city-game/city-game/src/data/overpass.ts:155
+  throw new Error('No se pudo descargar el mapa. ' + errors.join(' · '));
+        ^
+
+Error: No se pudo descargar el mapa. overpass-api.de: HTTP 406 · overpass.private.coffee: HTTP 429 · overpass.kumi.systems: HTTP 429 · maps.mail.ru: HTTP 504 · overpass-api.de: HTTP 406 · overpass.private.coffee: HTTP 429 · overpass.kumi.systems: HTTP 429 · maps.mail.ru: HTTP 504 · overpass-api.de: HTTP 406 · overpass.private.coffee: HTTP 429 · overpass.kumi.systems: HTTP 429 · maps.mail.ru: HTTP 504
+    at fetchOsm (/home/runner/work/city-game/city-game/src/data/overpass.ts:155:9)
+    at async <anonymous> (/home/runner/work/city-game/city-game/scripts/build-country.ts:24:32)
+
+Node.js v22.23.3
