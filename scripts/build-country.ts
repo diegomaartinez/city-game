@@ -17,7 +17,8 @@ console.log(`tierra: ${land.length} polígonos propios, ${foreign.length} vecino
 // ───────────── OpenStreetMap ─────────────
 const frameBox = bboxOf(FRAME.south, FRAME.west, FRAME.north, FRAME.east);
 const canBox = bboxOf(CANARIAS.south, CANARIAS.west, CANARIAS.north, CANARIAS.east);
-const q = (body: string, timeout = 300) => `[out:json][timeout:${timeout}][maxsize:1500000000];\n(\n${body}\n);\nout geom;`;
+// maxsize solo en la consulta grande (y por debajo del tope de overpass-api.de, que responde 406 si se pasa)
+const q = (body: string, timeout = 300, maxsize = 0) => `[out:json][timeout:${timeout}]${maxsize ? `[maxsize:${maxsize}]` : ''};\n(\n${body}\n);\nout geom;`;
 const log = (p: { phase: string; bytes: number; server: string }) => { if (p.phase === 'downloading' && p.bytes % 10_000_000 < 300_000) console.log(`  ${p.server} ${(p.bytes / 1e6).toFixed(0)} MB`); };
 
 console.log('ciudades…');
@@ -25,7 +26,7 @@ const citiesRes: OsmResponse = await fetchOsm(q(`node["place"~"^(city|town)$"]["
 console.log('aeropuertos…');
 const airRes: OsmResponse = await fetchOsm(q(`nwr["aeroway"="aerodrome"]["iata"]${frameBox};\n  nwr["aeroway"="aerodrome"]["iata"]${canBox};`), log);
 console.log('autopistas…');
-const roadRes: OsmResponse = await fetchOsm(q(`way["highway"~"^(motorway|trunk)$"]${frameBox};\n  way["highway"~"^(motorway|trunk)$"]${canBox};`, 900), log);
+const roadRes: OsmResponse = await fetchOsm(q(`way["highway"~"^(motorway|trunk)$"]${frameBox};\n  way["highway"~"^(motorway|trunk)$"]${canBox};`, 900, 1_000_000_000), log);
 
 // ciudades
 const cities: City[] = [];
