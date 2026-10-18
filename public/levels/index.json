@@ -13,5 +13,22 @@
     "version": 4,
     "builtAt": "2026-10-16T17:34:45.308Z",
     "def": "{\"id\":\"coruna\",\"name\":\"A Coruña\",\"subtitle\":\"La ciudad y su área metropolitana: Oleiros, Culleredo, Cambre, Arteixo y Sada.\",\"lat\":43.335,\"lon\":-8.39,\"radius\":10500,\"population\":400000,\"core\":{\"south\":43.28,\"west\":-8.53,\"north\":43.4,\"east\":-8.3}}"
+  },
+  {
+    "id": "iberia",
+    "kind": "country",
+    "name": "España y Portugal",
+    "subtitle": "Toda la península, Baleares, Canarias, Ceuta y Melilla: une sus ciudades en tren, bus, avión y barco.",
+    "radius": 618015,
+    "population": 34785835,
+    "jobs": 34785835,
+    "buildings": 0,
+    "cities": 192,
+    "districts": 42,
+    "file": "iberia.json.gz",
+    "bytes": 13748627,
+    "version": 4,
+    "builtAt": "2026-10-18T16:11:53.290Z",
+    "def": "iberia-v1"
   }
 ]
