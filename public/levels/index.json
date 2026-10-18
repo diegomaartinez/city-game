@@ -11,10 +11,10 @@
     "cities": 128,
     "districts": 42,
     "file": "iberia.json.gz",
-    "bytes": 1955314,
+    "bytes": 1951450,
     "version": 4,
-    "builtAt": "2026-10-18T16:30:43.041Z",
-    "def": "iberia-v3"
+    "builtAt": "2026-10-18T16:36:51.853Z",
+    "def": "iberia-v4"
   },
   {
     "id": "coruna",
