@@ -5,6 +5,7 @@ import { cache } from './data/cache.ts';
 import { Game, type SaveData } from './sim/game.ts';
 import { World } from './render/world.ts';
 import { MapRenderer } from './render/mapRenderer.ts';
+import { CountryRenderer } from './render/countryRenderer.ts';
 import { TransitRenderer } from './render/transitRenderer.ts';
 import { Tools } from './ui/tools.ts';
 import { Hud } from './ui/hud.ts';
@@ -17,7 +18,7 @@ async function play(start: StartResult): Promise<void> {
 
   const game = new Game(start.city, start.mode);
   const style = loadStyle();
-  const map = new MapRenderer(world, start.city, game.graph);
+  const map = game.country ? new CountryRenderer(world, start.city, game.graph) : new MapRenderer(world, start.city, game.graph);
   map.drawAll(style);
   const transit = new TransitRenderer(world, game);
   transit.setStyle(style);
@@ -27,7 +28,10 @@ async function play(start: StartResult): Promise<void> {
   hud.onStyle = s => { saveStyle(s); map.drawAll(s); transit.setStyle(s); };
   if (start.save) game.loadSave(start.save as SaveData);
   transit.drawNetwork();
-  world.centerOn({ x: 0, y: 0 }, Math.min(1.2, Math.min(world.width, world.height) / (start.city.radius * 1.9)));
+  const halfW = start.city.halfW ?? start.city.radius, halfH = start.city.halfH ?? start.city.radius;
+  const fit = Math.min(world.width / (halfW * 2.1), world.height / (halfH * 2.1));
+  if (game.country) { world.minZoom = fit * 0.8; world.maxZoom = fit * 40; }
+  world.centerOn({ x: 0, y: 0 }, Math.min(1.2, fit));
   if (import.meta.env.DEV) Object.assign(window, { __game: { game, world, tools, hud, transit } });
 
   let speed = 1;
@@ -56,8 +60,8 @@ async function play(start: StartResult): Promise<void> {
   };
 
   if (!start.save) {
-    hud.toast(`Bienvenido a ${start.city.name}: ${game.demand.population.toLocaleString('es-ES')} vecinos esperan transporte. El botón «?» explica cómo se juega.`, 'info');
-    setTimeout(() => hud.toast('Empieza poniendo paradas de bus junto a las calles y traza una línea que las una.', 'info'), 5000);
+    hud.toast(`Bienvenido a ${start.city.name}: ${game.demand.population.toLocaleString('es-ES')} ${game.country ? 'personas quieren viajar entre sus ciudades' : 'vecinos esperan transporte'}. El botón «?» explica cómo se juega.`, 'info');
+    setTimeout(() => hud.toast(game.country ? 'Empieza con una línea de tren (T) o de bus (B): haz clic en las ciudades que quieras unir.' : 'Empieza poniendo paradas de bus junto a las calles y traza una línea que las una.', 'info'), 5000);
   }
 
   let saveTimer = 0, hudTimer = 0;

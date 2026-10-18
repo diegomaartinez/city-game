@@ -3,14 +3,15 @@
 // por barrio (vecinos esperando sin parada, flujos entre barrios) y por hexágono (mapa de demanda).
 import type { CityData, Pt, Zone } from '../data/types.ts';
 import { pointInPoly } from '../data/geo.ts';
-import { MODE, PEOPLE_PER_PASSENGER, fareAcceptance, type Leg, type Network, type Stop } from './transit.ts';
+import { MODE, PEOPLE_PER_PASSENGER, fareAcceptance, haversine, type Leg, type Network, type Stop } from './transit.ts';
 import { Districts, type WeightedPoint } from './districts.ts';
 import type { RoadGraph } from './graph.ts';
 
 export interface Unserved { x: number; y: number; t: number; reason: 'origin' | 'dest' | 'route' | 'fare' }
 
-/** Viajes al día por persona que harían en transporte público si existiera. */
+/** Viajes al día por persona que harían en transporte público si existiera (ciudad); entre ciudades, muchos menos. */
 export const TRIPS_PER_PERSON = 0.35;
+export const TRIPS_PER_PERSON_COUNTRY = 0.012;
 /** Segundos que un vecino sin parada se queda esperando en su barrio antes de irse (vida media). */
 export const DISTRICT_WAIT = 90;
 
@@ -42,12 +43,34 @@ export class Demand {
   unserved: Unserved[] = [];
   private acc = 0;
   private rnd = Math.random;
+  readonly country: boolean;
+  /** País: destino por gravedad (población / distancia^1.6), acumulado por ciudad origen. */
+  private gravity: Float64Array[] = [];
+  private tripsPerPerson: number;
 
   constructor(data: CityData, private net: Network, graph: RoadGraph) {
     let pop = 0, jobs = 0;
     const hw: number[] = [], jw: number[] = [];
     const points: WeightedPoint[] = [];
     const k = data.peopleScale ?? 1;
+    this.country = data.kind === 'country';
+    this.tripsPerPerson = this.country ? TRIPS_PER_PERSON_COUNTRY : TRIPS_PER_PERSON;
+    if (this.country && data.cities) {
+      // cada ciudad es origen y destino con el peso de su población
+      data.cities.forEach((c, i) => {
+        const src: Source = { x: c.x, y: c.y, id: i, district: 0 };
+        this.homes.push(src); hw.push(c.pop); pop += c.pop;
+        this.jobs.push({ ...src }); jw.push(c.pop); jobs += c.pop;
+        points.push({ x: c.x, y: c.y, w: c.pop, kind: 'home' });
+      });
+      const C = data.cities;
+      this.gravity = C.map((a) => {
+        const cum = new Float64Array(C.length);
+        let acc = 0;
+        C.forEach((b, j) => { if (b !== a) { const d = Math.max(30, haversine(a.lat, a.lon, b.lat, b.lon) / 1000); acc += b.pop / Math.pow(d, 1.6); } cum[j] = acc; });
+        return cum;
+      });
+    }
     for (const b of data.buildings) {
       const floor = b.area * b.levels;
       const src: Source = { x: b.cx, y: b.cy, id: b.id, district: 0 };
@@ -66,11 +89,12 @@ export class Demand {
     }
     this.homeW = cumulative(hw); this.jobW = cumulative(jw);
     this.population = Math.round(pop); this.jobCount = Math.round(jobs);
-    this.districts = new Districts(points, data.places, data.radius, graph);
+    const places = this.country && data.cities ? data.cities.map(c => ({ name: c.name, kind: 'town' as const, x: c.x, y: c.y })) : data.places;
+    this.districts = new Districts(points, places, data.radius, graph);
     for (const s of this.homes) s.district = this.districts.nearest(s.x, s.y);
     for (const s of this.jobs) s.district = this.districts.nearest(s.x, s.y);
     // hexágonos: unos 220 m en el centro, 500 m en el área metropolitana
-    this.hexR = data.radius > 4000 ? 500 : data.radius > 1500 ? 220 : 120;
+    this.hexR = this.country ? 30000 : data.radius > 4000 ? 500 : data.radius > 1500 ? 220 : 120;
     for (const p of points) { const h = this.hexAt(p.x, p.y); if (p.kind === 'home') h.residents += p.w; else h.jobs += p.w; }
   }
 
@@ -112,7 +136,7 @@ export class Demand {
 
   /** Viajeros (grupos) potenciales al día. */
   dailyPotential(growth: number): number {
-    return (this.population * TRIPS_PER_PERSON * growth) / PEOPLE_PER_PASSENGER;
+    return (this.population * this.tripsPerPerson * growth) / PEOPLE_PER_PASSENGER;
   }
 
   /** Viajeros por segundo de juego a esta hora (el día dura 720 s; la media del factor horario es ~0,7). */
@@ -173,6 +197,15 @@ export class Demand {
     return list[lo];
   }
 
+  /** País: ciudad de destino según gravedad desde la ciudad `from`. */
+  private pickGravity(from: number): number {
+    const cum = this.gravity[from];
+    const r = this.rnd() * cum[cum.length - 1];
+    let lo = 0, hi = cum.length - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < r) lo = m + 1; else hi = m; }
+    return lo;
+  }
+
   /** Punto concreto de un origen: el propio edificio, o uno de los puntos de muestra de la zona. */
   private pointOf(s: Source): Pt {
     if (!s.samples || !s.samples.length) return { x: s.x, y: s.y };
@@ -183,7 +216,8 @@ export class Demand {
   private trip(minute: number, now: number): void {
     const h = (minute % DAY) / 60;
     const homeToWork = h < 12 ? 0.75 : h < 15 ? 0.5 : 0.25;
-    const a = this.pick(this.homes, this.homeW), b = this.pick(this.jobs, this.jobW);
+    const a = this.pick(this.homes, this.homeW);
+    const b = this.country ? this.jobs[this.pickGravity(a.id)] : this.pick(this.jobs, this.jobW);
     const [o, d] = this.rnd() < homeToWork ? [a, b] : [b, a];
     const op = this.pointOf(o), dp = this.pointOf(d);
     const od = o.samples ? this.districts.nearest(op.x, op.y) : o.district;

@@ -14,7 +14,7 @@ on:
         default: false
   push:
     branches: [main]
-    paths: ['levels/levels.json', 'scripts/build-levels.ts']
+    paths: ['levels/levels.json', 'scripts/build-levels.ts', 'scripts/build-country.ts', 'scripts/country-geo.ts']
 
 permissions:
   contents: write
@@ -35,6 +35,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node --experimental-transform-types scripts/build-levels.ts ${{ inputs.force && '--force' || '' }} ${{ inputs.levels }}
+      - name: Nivel de país (Iberia)
+        run: |
+          if [ ! -f public/levels/iberia.json.gz ] || [ "${{ inputs.force }}" = "true" ] || echo "${{ inputs.levels }}" | grep -q iberia; then
+            node --experimental-transform-types scripts/build-country.ts
+          else
+            echo "iberia: ya construido"
+          fi
       - name: Subir niveles al repo
         run: |
           git config user.name "github-actions[bot]"

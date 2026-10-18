@@ -6,7 +6,7 @@ import { GAME_MODES, GAME_MODE_LIST, type GameMode, type SaveData } from '../sim
 export interface StartResult { city: CityData; key: string; mode: GameMode; save?: SaveData }
 
 /** Entrada del índice de niveles (public/levels/index.json, generado por scripts/build-levels.ts). */
-export interface LevelInfo { id: string; name: string; subtitle: string; radius: number; population: number; jobs: number; buildings: number; districts: number; file: string; bytes: number; version: number }
+export interface LevelInfo { id: string; kind?: 'city' | 'country'; name: string; subtitle: string; radius: number; population: number; jobs: number; buildings: number; cities?: number; districts: number; file: string; bytes: number; version: number }
 
 const GAME_NAME = 'Little Transit';
 const LEVELS_URL = `${import.meta.env.BASE_URL}levels/`;
@@ -29,7 +29,7 @@ export async function loadLevel(info: LevelInfo, onProgress?: (bytes: number) =>
   const counted = r.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ transform(chunk, ctrl) { got += chunk.byteLength; onProgress?.(got); ctrl.enqueue(chunk); } }));
   const stream = typeof DecompressionStream === 'function' ? counted.pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>) : counted;
   const city = (await new Response(stream).json()) as CityData;
-  if (!city.roads?.length) throw new Error('El nivel está vacío o dañado');
+  if (!city.roads?.length && !city.cities?.length) throw new Error('El nivel está vacío o dañado');
   return city;
 }
 
@@ -83,7 +83,8 @@ export function showStart(): Promise<StartResult> {
       levelsBox.innerHTML = '';
       for (const l of levels) {
         const card = el('button', `btn level ${l === level ? 'active' : ''}`);
-        card.innerHTML = `<b>${l.name}</b><small>${l.subtitle}</small><span class="meta">${fmt(l.population)} habitantes · ${fmt(l.jobs)} empleos · ${(l.radius * 2 / 1000).toFixed(0)} km de lado · ${l.districts} barrios</span><span class="state" data-state></span>`;
+        const meta = l.kind === 'country' ? `${fmt(l.population)} habitantes · ${l.cities ?? 0} ciudades · tren, bus, avión y barco` : `${fmt(l.population)} habitantes · ${fmt(l.jobs)} empleos · ${(l.radius * 2 / 1000).toFixed(0)} km de lado · ${l.districts} barrios`;
+        card.innerHTML = `<b>${l.name}</b><small>${l.subtitle}</small><span class="meta">${meta}</span><span class="state" data-state></span>`;
         card.onclick = () => void selectLevel(l);
         levelsBox.appendChild(card);
       }

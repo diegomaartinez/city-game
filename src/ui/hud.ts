@@ -1,6 +1,6 @@
 // HUD: barra de estado, herramientas, panel de líneas, resumen (demanda, oferta, finanzas, préstamos,
 // precios, barrios, hitos), fichas de barrio sobre el mapa, mensajes, informe diario, menú y ayuda.
-import { GAME_MODES, LOAN_STEP, MAX_DEBT, type DayReport, type Game, type Milestone } from '../sim/game.ts';
+import { GAME_MODES, type DayReport, type Game, type Milestone } from '../sim/game.ts';
 import { LINE_COLORS, MODE, PEOPLE_PER_PASSENGER, type Line, type Mode, type Stop } from '../sim/transit.ts';
 import { MAP_STYLES, type MapStyle } from '../render/palette.ts';
 import { OVERLAYS, type Overlay } from '../render/transitRenderer.ts';
@@ -14,6 +14,9 @@ const ICONS: Record<string, string> = {
   'line:bus': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 18c4 0 4-12 8-12s4 12 8 12" stroke="#d23b33" stroke-width="3"/><circle cx="4" cy="18" r="2.5" fill="#fff"/><circle cx="12" cy="6" r="2.5" fill="#fff"/><circle cx="20" cy="18" r="2.5" fill="#fff"/></svg>',
   'line:metro': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 18L12 6l8 12" stroke="#2f6fc4" stroke-width="3.5"/><circle cx="4" cy="18" r="2.8" fill="#ffffff"/><circle cx="12" cy="6" r="2.8" fill="#ffffff"/><circle cx="20" cy="18" r="2.8" fill="#ffffff"/></svg>',
   remove: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7" fill="#fff"/><path d="M8 8l8 8M16 8l-8 8" stroke="#d23b33"/></svg>',
+  'line:train': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="5" y="3" width="14" height="14" rx="3" fill="#fff"/><path d="M5 10h14" stroke="#3c8d4f" stroke-width="2.6"/><circle cx="9" cy="14" r="1.3" fill="currentColor"/><circle cx="15" cy="14" r="1.3" fill="currentColor"/><path d="M8 17l-2 4M16 17l2 4" stroke-linecap="round"/></svg>',
+  'line:plane': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 13l8-1 4-8 2 1-2 7 6 2v2l-6-1-1 5 2 1-1 2-3-1-3 1-1-2 2-1-1-5-6 1z" fill="#fff"/></svg>',
+  'line:ship': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M3 14l2 5h14l2-5-9-3z" fill="#fff"/><path d="M8 11V6h8v5" fill="#fff"/><path d="M12 3v3" stroke="#2f6fc4" stroke-width="2.6"/><path d="M2 21c2 1 4 1 6 0s4-1 6 0 4 1 6 0" stroke="#2f6fc4"/></svg>',
   overlay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z" fill="#e88a82" opacity=".55"/><path d="M12 8l3.5 2v4L12 16l-3.5-2v-4z" fill="#d23b33"/></svg>',
   fichas: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="11" rx="2.5" fill="#fff"/><path d="M7 9h10M7 12.5h6"/><path d="M12 16v4"/></svg>',
   summary: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>',
@@ -27,6 +30,9 @@ const eur = (n: number) => (Number.isFinite(n) ? fmt(n) + ' €' : '∞');
 const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 const people = (dots: number) => fmt(dots * PEOPLE_PER_PASSENGER);
 const signed = (n: number) => (n >= 0 ? '+' : '') + eur(n);
+/** Dinero abreviado para cifras grandes (12,5 M€). */
+const money = (n: number) => (Math.abs(n) >= 1e6 ? (n / 1e6).toLocaleString('es-ES', { maximumFractionDigits: 1 }) + ' M€' : eur(n));
+const vehName = (m: Mode, singular = false) => ({ bus: singular ? 'bus' : 'Buses', metro: singular ? 'tren' : 'Trenes', train: singular ? 'tren' : 'Trenes', plane: singular ? 'avión' : 'Aviones', ship: singular ? 'barco' : 'Barcos', hub: '' })[m];
 
 export class Hud {
   readonly root = document.createElement('div');
@@ -90,7 +96,8 @@ export class Hud {
     this.els.cityName.textContent = game.data.name;
     this.buildToolbar();
     this.buildFichas();
-    try { this.fichasOn = localStorage.getItem('lt-fichas') !== '0'; } catch { /* sin almacenamiento */ }
+    this.fichasOn = !game.country;
+    try { const v = localStorage.getItem(game.country ? 'lt-fichas-pais' : 'lt-fichas'); if (v !== null) this.fichasOn = v === '1'; } catch { /* sin almacenamiento */ }
     this.applyFichas();
 
     this.root.querySelectorAll<HTMLButtonElement>('#speed .btn').forEach(b => { b.onclick = () => this.setSpeed(+b.dataset.speed!); });
@@ -101,7 +108,7 @@ export class Hud {
     (this.root.querySelector('#fichasBtn') as HTMLButtonElement).onclick = () => this.toggleFichas();
     this.els.goal.onclick = () => { if (!this.summaryOpen) this.toggleSummary(); };
 
-    game.on('money', m => { this.els.money.textContent = eur(m); this.els.money.classList.toggle('neg', m < 0); });
+    game.on('money', m => { this.els.money.textContent = game.country ? money(m) : eur(m); this.els.money.classList.toggle('neg', m < 0); });
     game.on('message', (t, k) => this.toast(t, k));
     game.on('network', () => { this.renderPanel(); this.updateLocks(); if (this.summaryOpen) this.renderSummary(); });
     game.on('day', r => this.dayReport(r));
@@ -119,7 +126,7 @@ export class Hud {
     tools.onHint = t => { this.els.hint.textContent = t; };
     tools.onHover = h => this.showHover(h);
     tools.onSelect = (line, stop) => { this.panelStop = stop; this.renderPanel(line); };
-    this.els.money.textContent = eur(game.money);
+    this.els.money.textContent = game.country ? money(game.money) : eur(game.money);
     this.markTool('pan');
     this.updateLocks();
     this.els.hint.textContent = tools.hintFor('pan');
@@ -129,7 +136,12 @@ export class Hud {
 
   private buildToolbar(): void {
     const bar = this.root.querySelector('#toolbar')!;
-    const items: Array<[string, string, string] | 'sep'> = [
+    const items: Array<[string, string, string] | 'sep'> = this.game.country ? [
+      ['pan', 'Mover y ver', '1'], 'sep',
+      ['line:train', 'Nueva línea de tren', 'T'], ['line:bus', 'Nueva línea de bus', 'B'], 'sep',
+      ['line:plane', 'Nueva ruta aérea', 'P'], ['line:ship', 'Nueva línea marítima', 'S'], 'sep',
+      ['remove', 'Quitar ciudad de la red', 'D'],
+    ] : [
       ['pan', 'Mover y ver', '1'], 'sep',
       ['stop:bus', 'Parada de bus', 'B'], ['line:bus', 'Nueva línea de bus', 'L'], 'sep',
       ['stop:metro', 'Estación de metro', 'M'], ['line:metro', 'Nueva línea de metro', 'K'], 'sep',
@@ -151,20 +163,22 @@ export class Hud {
   /** Candados en las herramientas aún no desbloqueadas por los hitos. */
   private updateLocks(): void {
     const g = this.game;
-    const metro = !g.metroUnlocked;
-    this.toolButtons.get('stop:metro')!.classList.toggle('locked', metro);
-    this.toolButtons.get('line:metro')!.classList.toggle('locked', metro);
-    this.toolButtons.get('line:bus')!.classList.toggle('locked', g.net.lines.size >= g.maxLines);
-    this.toolButtons.get('line:metro')!.classList.toggle('locked', metro || g.net.lines.size >= g.maxLines);
+    const full = g.net.lines.size >= g.maxLines;
+    for (const [id, b] of this.toolButtons) {
+      const [kind, mode] = id.split(':') as [string, Mode | undefined];
+      if (!mode) continue;
+      b.classList.toggle('locked', !g.unlocked(mode) || (kind === 'line' && full));
+    }
   }
 
   pick(id: string): void {
     const g = this.game;
-    if ((id === 'stop:metro' || id === 'line:metro') && !g.metroUnlocked) { this.toast(g.metroLockText, 'warn'); return; }
-    if (id === 'line:bus' || id === 'line:metro') {
-      const why = g.canCreateLine(id === 'line:bus' ? 'bus' : 'metro');
+    const [kind, mode] = id.split(':') as [string, Mode | undefined];
+    if (mode && !g.unlocked(mode)) { this.toast(g.lockText(mode), 'warn'); return; }
+    if (kind === 'line' && mode) {
+      const why = g.canCreateLine(mode);
       if (why) { this.toast(why, 'warn'); return; }
-      this.tools.startLine(id === 'line:bus' ? 'bus' : 'metro');
+      this.tools.startLine(mode);
     } else this.tools.setTool(id as Tool);
   }
 
@@ -196,7 +210,7 @@ export class Hud {
 
   private toggleFichas(): void {
     this.fichasOn = !this.fichasOn;
-    try { localStorage.setItem('lt-fichas', this.fichasOn ? '1' : '0'); } catch { /* sin almacenamiento */ }
+    try { localStorage.setItem(this.game.country ? 'lt-fichas-pais' : 'lt-fichas', this.fichasOn ? '1' : '0'); } catch { /* sin almacenamiento */ }
     this.applyFichas();
   }
 
@@ -215,7 +229,9 @@ export class Hud {
       return;
     }
     if (k === 'enter' && this.tools.tool === 'line') { this.tools.finishLine(); this.tools.setTool('pan'); return; }
-    const map: Record<string, string> = { '1': 'pan', b: 'stop:bus', m: 'stop:metro', l: 'line:bus', k: 'line:metro', d: 'remove' };
+    const map: Record<string, string> = this.game.country
+      ? { '1': 'pan', t: 'line:train', b: 'line:bus', p: 'line:plane', s: 'line:ship', d: 'remove' }
+      : { '1': 'pan', b: 'stop:bus', m: 'stop:metro', l: 'line:bus', k: 'line:metro', d: 'remove' };
     if (map[k]) { this.pick(map[k]); return; }
     if (k === ' ') { e.preventDefault(); this.setSpeed(this.speed === 0 ? 1 : 0); return; }
     if (k === 'g') { this.cycleOverlay(); return; }
@@ -281,7 +297,7 @@ export class Hud {
     this.els.riding.textContent = people(g.net.riding);
     this.els.satis.textContent = g.satisfaction + '%';
     const net = g.netToday;
-    this.els.net.textContent = signed(net);
+    this.els.net.textContent = g.country ? (net >= 0 ? '+' : '') + money(net) : signed(net);
     this.els.net.className = net >= 0 ? 'pos' : 'neg';
     const m = g.nextMilestone;
     if (m && !g.creative) {
@@ -336,7 +352,7 @@ export class Hud {
     const finance = g.creative
       ? `<div class="grid"><span>Billetes hoy</span><b data-v="income">${eur(s.incomeToday)}</b><span>Mantenimiento al día</span><b>${eur(s.upkeepDaily)}</b></div><div class="muted" style="font-size:11px;margin-top:2px">Modo creativo: el dinero no se acaba. El objetivo es mover al máximo de viajeros.</div>`
       : `<div class="grid"><span>Billetes hoy</span><b data-v="income">${eur(s.incomeToday)}</b>${s.subsidyDaily ? `<span>Subvención municipal</span><b class="pos">+${eur(s.subsidyDaily)}</b>` : ''}<span>Mantenimiento al día</span><b>−${eur(s.upkeepDaily)}</b>${s.debt ? `<span>Intereses del préstamo</span><b>−${eur(s.interestDaily)}</b>` : ''}<span>Balance previsto del día</span><b data-v="net" class="${net >= 0 ? 'pos' : 'neg'}">${signed(net)}</b></div>
-        ${g.def.loans ? `<div class="prow loans"><span>Deuda: <b>${eur(s.debt)}</b></span><button class="btn small" data-loan="borrow" ${s.debt + LOAN_STEP > MAX_DEBT ? 'disabled' : ''}>Pedir ${fmt(LOAN_STEP / 1000)}k €</button><button class="btn small" data-loan="repay" ${s.debt <= 0 ? 'disabled' : ''}>Devolver</button></div><div class="muted" style="font-size:11px">0,4 % de interés al día, hasta ${eur(MAX_DEBT)}.${g.def.bankruptDays ? ` Cinco días seguidos en negativo y pierdes la concesión.` : ' En modo fácil el ayuntamiento cubre los descubiertos.'}</div>` : ''}`;
+        ${g.def.loans ? `<div class="prow loans"><span>Deuda: <b>${eur(s.debt)}</b></span><button class="btn small" data-loan="borrow" ${s.debt + g.loanStep > g.maxDebt ? 'disabled' : ''}>Pedir ${money(g.loanStep)}</button><button class="btn small" data-loan="repay" ${s.debt <= 0 ? 'disabled' : ''}>Devolver</button></div><div class="muted" style="font-size:11px">0,4 % de interés al día, hasta ${eur(g.maxDebt)}.${g.def.bankruptDays ? ` Cinco días seguidos en negativo y pierdes la concesión.` : ' En modo fácil el ayuntamiento cubre los descubiertos.'}</div>` : ''}`;
     el.innerHTML = `
       <button class="btn small close" id="closeSummary" title="Cerrar (R)">✕</button>
       <h3>Ciudad</h3>
@@ -349,20 +365,19 @@ export class Hud {
       <table><tr><th>barrio</th><th>hab</th><th>cobertura</th><th>sin servicio</th></tr>${districtRows}</table>
       ${flowRows ? `<h3>Dónde quiere ir la gente</h3><table class="flows"><tr><th>entre</th><th>y</th><th>viajes</th><th>sin servicio</th></tr>${flowRows}</table><div class="muted" style="font-size:11px">Viajes de hoy entre barrios (ida y vuelta juntos, con los de ayer a la mitad).</div>` : ''}
       <h3>Oferta</h3>
-      <div class="grid"><span>Paradas bus / estaciones</span><b>${s.stops.bus} / ${s.stops.metro}</b><span>Buses / trenes</span><b>${s.vehicles.bus} / ${s.vehicles.metro}</b><span>Plazas en circulación</span><b>${fmt(s.capacity * PEOPLE_PER_PASSENGER)}</b><span>Esperando ahora</span><b data-v="waiting">${people(s.waiting)}</b><span>A bordo ahora</span><b data-v="riding">${people(s.riding)}</b></div>
+      <div class="grid">${g.country ? `<span>Ciudades en la red</span><b>${s.stops.hub ?? 0}</b>` : `<span>Paradas bus / estaciones</span><b>${s.stops.bus} / ${s.stops.metro}</b>`}<span>${g.modes.map(m => vehName(m)).join(' / ')}</span><b>${g.modes.map(m => s.vehicles[m] ?? 0).join(' / ')}</b><span>Plazas en circulación</span><b>${fmt(s.capacity * PEOPLE_PER_PASSENGER)}</b><span>Esperando ahora</span><b data-v="waiting">${people(s.waiting)}</b><span>A bordo ahora</span><b data-v="riding">${people(s.riding)}</b></div>
       <h3>Finanzas · modo ${GAME_MODES[g.mode].name.toLowerCase()}</h3>
       ${finance}
       <h3>Precio del billete</h3>
-      <div class="fare"><label>Bus</label><input type="range" min="0.5" max="4" step="0.1" value="${g.fares.bus}" data-fare="bus"><b>${g.fares.bus.toFixed(2)} €</b></div>
-      <div class="fare"><label>Metro</label><input type="range" min="0.5" max="4" step="0.1" value="${g.fares.metro}" data-fare="metro"><b>${g.fares.metro.toFixed(2)} €</b></div>
-      <div class="muted" style="font-size:11px;margin-top:2px">Cuanto más caro el billete, más vecinos deciden no viajar.</div>
+      ${g.modes.map(m => `<div class="fare"><label>${MODE[m].name}</label><input type="range" min="${g.country ? 5 : 0.5}" max="${g.country ? (m === 'plane' ? 250 : 120) : 4}" step="${g.country ? 1 : 0.1}" value="${g.fares[m]}" data-fare="${m}"><b>${g.fares[m].toFixed(g.country ? 0 : 2)} €</b></div>`).join('')}
+      <div class="muted" style="font-size:11px;margin-top:2px">Cuanto más caro el billete, más ${g.country ? 'viajeros' : 'vecinos'} deciden no viajar.</div>
       <h3>Costes</h3>
-      <div class="grid"><span>Parada de bus · bus</span><b>${eur(MODE.bus.stopCost)} · ${eur(MODE.bus.vehicleCost)} (+${eur(MODE.bus.upkeep)}/día)</b><span>Estación · tren</span><b>${eur(MODE.metro.stopCost)} · ${eur(MODE.metro.vehicleCost)} (+${eur(MODE.metro.upkeep)}/día)</b><span>Túnel de metro</span><b>${eur(MODE.metro.trackCost)}/m</b></div>
+      <div class="grid">${g.modes.map(m => `<span>${MODE[m].stopName} · ${vehName(m, true)}</span><b>${money(MODE[m].stopCost)} · ${money(MODE[m].vehicleCost)} (+${money(MODE[m].upkeep)}/día)</b>${MODE[m].trackCost ? `<span>${m === 'metro' ? 'Túnel de metro' : 'Vía de tren'}</span><b>${g.country ? `${(MODE[m].trackCost / 1000).toFixed(1)} M€/km` : `${eur(MODE[m].trackCost)}/m`}</b>` : ''}`).join('')}${g.country ? '<span class="muted">Aeropuerto ya existente</span><b>10 % del coste</b>' : ''}</div>
       ${g.creative ? '' : `<h3>Hitos</h3><div class="milestones">${milestones}</div>`}
       ${linesRows ? `<h3>Líneas hoy</h3><table><tr><th>línea</th><th>veh</th><th>viajeros</th><th>billetes</th><th>coste/día</th></tr>${linesRows}</table>` : ''}`;
     (el.querySelector('#closeSummary') as HTMLButtonElement).onclick = () => this.toggleSummary();
     el.querySelectorAll<HTMLInputElement>('input[data-fare]').forEach(inp => {
-      inp.oninput = () => { const mode = inp.dataset.fare as Mode; g.setFare(mode, +inp.value); (inp.nextElementSibling as HTMLElement).textContent = g.fares[mode].toFixed(2) + ' €'; };
+      inp.oninput = () => { const mode = inp.dataset.fare as Mode; g.setFare(mode, +inp.value); (inp.nextElementSibling as HTMLElement).textContent = g.fares[mode].toFixed(g.country ? 0 : 2) + ' €'; };
     });
     el.querySelectorAll<HTMLButtonElement>('[data-loan]').forEach(b => {
       b.onclick = () => { if (b.dataset.loan === 'borrow') g.borrow(); else g.repay(); this.renderSummary(); };
@@ -397,7 +412,7 @@ export class Hud {
         html += `<div class="ldetail">
           <div class="muted small">${names || 'sin paradas'}</div>
           <div class="muted small" id="riding"></div>
-          ${l.warnings ? `<div class="warn small">${l.warnings} tramo(s) a contramano o sin calle</div>` : ''}
+          ${l.warnings ? `<div class="warn small">${l.warnings} tramo(s) ${l.mode === 'ship' ? 'cruzan tierra: arrastra la línea para rodear la costa' : l.mode === 'bus' && this.game.country ? 'sin autopista' : 'a contramano o sin calle'}</div>` : ''}
           <div class="prow">
             <span>Vehículos</span>
             <button class="btn small" data-act="veh-">−</button><b>${l.vehicles.length}</b><button class="btn small" data-act="veh+" title="${eur(def.vehicleCost)} + ${eur(def.upkeep)}/día">+</button>
@@ -508,6 +523,7 @@ export class Hud {
   }
 
   openHelp(): void {
+    if (this.game.country) { this.openCountryHelp(); return; }
     const m = this.modal(`<h2>Cómo se juega</h2>
       <p>La ciudad es de verdad. Cada punto que ves esperando representa a ${PEOPLE_PER_PASSENGER} personas; cuántas salen de cada edificio depende de su tamaño y sus plantas. Van de casa al trabajo, las tiendas y los equipamientos, y vuelven por la tarde.</p>
       <ul>
@@ -520,6 +536,22 @@ export class Hud {
         <li><b>Hitos</b>: empiezas con dos líneas de bus; al alcanzar cierta cantidad de viajeros desbloqueas más líneas, el metro y premios en dinero. En modo creativo todo está disponible desde el principio.</li>
         <li><b>Dinero</b>: cada viaje paga billete; cada vehículo cuesta mantenimiento diario. En modo fácil el ayuntamiento te subvenciona; en normal, cinco días seguidos en negativo y pierdes la concesión (hay préstamos).</li>
         <li><kbd>Espacio</kbd> pausa; <kbd>2</kbd> y <kbd>3</kbd> aceleran. Hay horas punta por la mañana y por la tarde, y la demanda crece un poco cada día.</li>
+      </ul>
+      <div class="stack"><button class="btn primary" id="ok">¡Entendido!</button></div>`);
+    (m.querySelector('#ok') as HTMLButtonElement).onclick = () => m.remove();
+  }
+
+  private openCountryHelp(): void {
+    const m = this.modal(`<h2>Cómo se juega</h2>
+      <p>Toda la península, Baleares, Canarias, Ceuta y Melilla. Cada punto que ves esperando representa a ${PEOPLE_PER_PASSENGER} personas que quieren viajar de una ciudad a otra: cuanto más grandes y cercanas son dos ciudades, más gente quiere moverse entre ellas.</p>
+      <ul>
+        <li><b>Líneas</b>: elige un modo (<kbd>T</kbd> tren, <kbd>B</kbd> bus, <kbd>P</kbd> avión, <kbd>S</kbd> barco) y haz clic en las ciudades por orden; la ciudad entra en la red con el primer clic. Clic en la primera para cerrar un bucle; <kbd>Enter</kbd> para terminar.</li>
+        <li><b>Tren</b>: vía nueva que se paga por kilómetro; rápido y de gran capacidad. <b>Bus</b>: barato y lento, va por las autopistas reales. <b>Avión</b>: solo entre ciudades con aeropuerto (triángulo azul), muy rápido y caro. <b>Barco</b>: solo entre ciudades costeras, sin cruzar tierra; junto con el avión, el único modo que llega a las islas, Ceuta y Melilla.</li>
+        <li>Los viajeros hacen <b>transbordo</b> entre modos en la misma ciudad. Con una línea seleccionada, <b>arrástrala</b> para ajustar su trazado (tren, avión y barco); sus puntos de paso se mueven arrastrándolos y se quitan con <kbd>D</kbd>.</li>
+        <li><kbd>R</kbd> abre el <b>resumen</b>: demanda, trayectos más pedidos, oferta, finanzas, préstamos, precio del billete e hitos. <kbd>G</kbd> alterna las capas de demanda sin cubrir y población.</li>
+        <li><b>Hitos</b>: empiezas con dos líneas (tren y bus); al mover viajeros desbloqueas más líneas, el avión, el barco y premios en dinero. En modo creativo todo está disponible.</li>
+        <li><b>Dinero</b> (en millones): cada viaje paga billete; cada vehículo cuesta mantenimiento diario. En fácil hay subvención; en normal, cinco días seguidos en negativo y pierdes la concesión (hay préstamos).</li>
+        <li><kbd>Espacio</kbd> pausa; <kbd>2</kbd> y <kbd>3</kbd> aceleran. El recuadro de abajo a la derecha es Canarias: las distancias reales se respetan en los tiempos de viaje.</li>
       </ul>
       <div class="stack"><button class="btn primary" id="ok">¡Entendido!</button></div>`);
     (m.querySelector('#ok') as HTMLButtonElement).onclick = () => m.remove();

@@ -37,33 +37,37 @@ export class World {
     this.app.canvas.style.touchAction = 'none';
   }
 
-  /** Lado del cuadrado jugable / 2. */
+  /** Mitad del ancho y del alto del rectángulo jugable (la isla). */
   half = 0;
+  halfW = 0;
+  halfH = 0;
 
-  drawGround(radius: number, bg: number, patches: [number, number] | null, backdrop: number): void {
+  drawGround(radius: number, bg: number, patches: [number, number] | null, backdrop: number, halfW = radius, halfH = radius): void {
     const g = this.ground;
     g.clear();
     this.app.renderer.background.color = backdrop;
     const half = radius + MARGIN;
     this.half = half;
-    g.rect(-half, -half, half * 2, half * 2).fill(bg);
+    this.halfW = halfW + MARGIN; this.halfH = halfH + MARGIN;
+    const W = this.halfW, H = this.halfH;
+    g.rect(-W, -H, W * 2, H * 2).fill(bg);
     if (patches) {
       const r = rng(7);
       for (let i = 0; i < 140; i++) {
-        const x = (r() * 2 - 1) * half, y = (r() * 2 - 1) * half;
+        const x = (r() * 2 - 1) * W, y = (r() * 2 - 1) * H;
         const w = 40 + r() * 260, h = w * (0.4 + r() * 0.5);
         g.ellipse(x, y, w, h).fill({ color: r() < 0.7 ? patches[0] : patches[1], alpha: 0.35 + r() * 0.3 });
       }
     }
     this.islandMask.clear();
-    this.islandMask.rect(-half, -half, half * 2, half * 2).fill(0xffffff);
+    this.islandMask.rect(-W, -H, W * 2, H * 2).fill(0xffffff);
     // sombra suave bajo la isla
     const sh = this.islandShadow;
     sh.clear();
-    const d = Math.max(10, half * 0.012);
-    sh.rect(-half + d * 0.6, -half + d, half * 2, half * 2).fill({ color: 0x000000, alpha: 0.10 });
-    sh.rect(-half + d * 1.4, -half + d * 2.2, half * 2, half * 2).fill({ color: 0x000000, alpha: 0.05 });
-    sh.rect(-half, -half, half * 2, half * 2).stroke({ color: 0xffffff, width: Math.max(2, half * 0.002), alpha: 0.7 });
+    const d = Math.max(10, Math.max(W, H) * 0.012);
+    sh.rect(-W + d * 0.6, -H + d, W * 2, H * 2).fill({ color: 0x000000, alpha: 0.10 });
+    sh.rect(-W + d * 1.4, -H + d * 2.2, W * 2, H * 2).fill({ color: 0x000000, alpha: 0.05 });
+    sh.rect(-W, -H, W * 2, H * 2).stroke({ color: 0xffffff, width: Math.max(2, Math.max(W, H) * 0.002), alpha: 0.7 });
   }
 
   get width(): number { return this.app.renderer.width / this.app.renderer.resolution; }
@@ -98,8 +102,8 @@ export class World {
   /** Limita la cámara para no perderse lejos de la ciudad. */
   clamp(radius: number): void {
     const c = this.toWorld(this.width / 2, this.height / 2);
-    const lim = radius + MARGIN;
-    const cx = Math.max(-lim, Math.min(lim, c.x)), cy = Math.max(-lim, Math.min(lim, c.y));
+    const lw = this.halfW || radius + MARGIN, lh = this.halfH || radius + MARGIN;
+    const cx = Math.max(-lw, Math.min(lw, c.x)), cy = Math.max(-lh, Math.min(lh, c.y));
     if (cx !== c.x || cy !== c.y) this.centerOn({ x: cx, y: cy });
   }
 }

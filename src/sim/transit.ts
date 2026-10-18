@@ -1,8 +1,8 @@
 // Red de transporte: paradas, líneas, vehículos y viajeros, con búsqueda de rutas por la red.
-import type { Pt } from '../data/types.ts';
-import { DRIVABLE, HASH, NEAR_STOP, ROAD_WIDTH, RoadGraph } from './graph.ts';
+import type { City, Pt } from '../data/types.ts';
+import { DRIVABLE, NEAR_STOP, ROAD_WIDTH, RoadGraph } from './graph.ts';
 
-export type Mode = 'bus' | 'metro';
+export type Mode = 'bus' | 'metro' | 'train' | 'plane' | 'ship' | 'hub';
 
 export interface ModeDef {
   name: string;
@@ -18,29 +18,57 @@ export interface ModeDef {
   vehicleCost: number;
   /** Coste por vehículo y día. */
   upkeep: number;
-  /** Coste por metro de túnel (solo metro). */
+  /** Coste por metro de vía o túnel. */
   trackCost: number;
+  /** Fuera de un nivel de país no existe. */
+  country?: boolean;
 }
 
-/** Personas que representa cada viajero dibujado. */
-export const PEOPLE_PER_PASSENGER = 10;
+/** Personas que representa cada viajero dibujado (10 en ciudad, 100 en país). */
+export let PEOPLE_PER_PASSENGER = 10;
+/** Precio de referencia: la aceptación del billete se mide en relación a él (1 € ciudad, 20 € país). */
+export let FARE_UNIT = 1;
 
 export const MODE: Record<Mode, ModeDef> = {
   bus:   { name: 'Bus',   stopName: 'Parada de bus',    capacity: 8,  speed: 40, dwell: 2.5, walk: 330, stopCost: 3000,   vehicleCost: 120000, upkeep: 600,  trackCost: 0 },
   metro: { name: 'Metro', stopName: 'Estación de metro', capacity: 80, speed: 90, dwell: 4,   walk: 500, stopCost: 150000, vehicleCost: 500000, upkeep: 2000, trackCost: 800 },
+  // ── país: 1 punto = 100 personas; velocidades en m/s de juego (Madrid–Barcelona en tren ≈ 75 s)
+  hub:   { name: 'Ciudad', stopName: 'Ciudad', capacity: 0, speed: 0, dwell: 0, walk: 12000, stopCost: 0, vehicleCost: 0, upkeep: 0, trackCost: 0, country: true },
+  train: { name: 'Tren',  stopName: 'Estación de tren', capacity: 10, speed: 8000,  dwell: 4, walk: 12000, stopCost: 25_000_000,  vehicleCost: 25_000_000, upkeep: 120_000, trackCost: 500, country: true },
+  plane: { name: 'Avión', stopName: 'Aeropuerto',       capacity: 3, speed: 25000, dwell: 7, walk: 12000, stopCost: 150_000_000, vehicleCost: 50_000_000, upkeep: 250_000, trackCost: 0, country: true },
+  ship:  { name: 'Barco', stopName: 'Puerto',           capacity: 12, speed: 2500, dwell: 8, walk: 12000, stopCost: 60_000_000,  vehicleCost: 60_000_000, upkeep: 150_000, trackCost: 0, country: true },
 };
+/** Modos con los que se trazan líneas en cada tipo de nivel. */
+export const CITY_MODES: Mode[] = ['bus', 'metro'];
+export const COUNTRY_MODES: Mode[] = ['train', 'bus', 'plane', 'ship'];
+/** Valores del bus en un nivel de país (autobús interurbano por autopista). */
+const COUNTRY_BUS: ModeDef = { name: 'Bus', stopName: 'Estación de autobuses', capacity: 2, speed: 3500, dwell: 3, walk: 12000, stopCost: 1_000_000, vehicleCost: 600_000, upkeep: 15_000, trackCost: 0, country: true };
+const CITY_BUS: ModeDef = { ...MODE.bus };
 
 /** Precio del billete por modo (editable en el juego). */
-export const FARES: Record<Mode, number> = { bus: 1.5, metro: 2 };
+export const FARES: Record<Mode, number> = { bus: 1.5, metro: 2, hub: 0, train: 35, plane: 90, ship: 45 };
+const CITY_FARES = { bus: 1.5, metro: 2 }, COUNTRY_FARES = { bus: 20, train: 35, plane: 90, ship: 45 };
+
+/** Ajusta modos, escala de viajeros y precios al tipo de nivel. */
+export function applyLevelKind(country: boolean): void {
+  Object.assign(MODE.bus, country ? COUNTRY_BUS : CITY_BUS);
+  PEOPLE_PER_PASSENGER = country ? 100 : 10;
+  PATIENCE = country ? 220 : 80;
+  FARE_UNIT = country ? 20 : 1;
+  Object.assign(FARES, country ? COUNTRY_FARES : CITY_FARES);
+}
 
 /** Probabilidad de que un viajero acepte el precio. */
 export function fareAcceptance(fare: number): number {
-  return Math.max(0.35, Math.min(1, 1.15 - 0.15 * fare));
+  return Math.max(0.35, Math.min(1, 1.15 - 0.15 * (fare / FARE_UNIT)));
 }
+
+/** Prefijo del nombre de las líneas nuevas. */
+export const LINE_PREFIX: Record<Mode, string> = { bus: 'Línea', metro: 'Metro', hub: 'Línea', train: 'Tren', plane: 'Vuelo', ship: 'Barco' };
 
 export const LINE_COLORS = [0xd23b33, 0x2f6fc4, 0xf0bf3c, 0x3c8d4f, 0xe57a2e, 0x8e5bb5, 0x1fa3a3, 0xe88a82, 0x6b4f2a, 0x3b3b40];
 
-export const PATIENCE = 80;        // segundos de espera antes de rendirse
+export let PATIENCE = 80;          // segundos de espera antes de rendirse (país: más, los viajes son largos)
 export const TRANSFER_COST = 35;   // penalización de transbordo (s) al planificar
 export const BOARD_COST = 20;      // espera estimada al subir (s)
 
@@ -73,9 +101,12 @@ export interface Stop {
   queue: Passenger[];
   /** Viajeros que se rindieron aquí recientemente (para el dibujo). */
   frustrated: number;
+  /** Índice de la ciudad (niveles de país). */
+  city?: number;
 }
 
-export interface Segment { pts: Pt[]; cum: number[]; len: number; straight: boolean }
+/** `len` es la longitud que recorre el vehículo (en Canarias, la real); `geomLen` la dibujada. */
+export interface Segment { pts: Pt[]; cum: number[]; len: number; geomLen: number; straight: boolean }
 
 export interface Vehicle {
   line: Line;
@@ -122,13 +153,40 @@ export class Network {
   private planVersion = -1;
   stats: NetworkStats = { delivered: 0, lost: 0, spawned: 0, unserved: 0, tripTime: 0, trips: 0 };
   onDelivered: (p: Passenger, t: number) => void = () => undefined;
+  /** Nivel de país: las paradas son ciudades. */
+  cities: City[] | null = null;
+  /** Nivel de país: ¿cruza tierra este trazado? (para avisar en las líneas de barco). */
+  landCheck: ((pts: Pt[]) => boolean) | null = null;
 
   constructor(public graph: RoadGraph) {}
+
+  get country(): boolean { return this.cities !== null; }
+
+  /** Ciudad más cercana a un punto (niveles de país). */
+  cityAt(x: number, y: number, maxDist: number): number {
+    let best = -1, bd = maxDist;
+    this.cities?.forEach((c, i) => { const d = Math.hypot(c.x - x, c.y - y); if (d < bd) { bd = d; best = i; } });
+    return best;
+  }
+
+  /** Parada que ya hay en una ciudad, si la hay. */
+  stopOfCity(ci: number): Stop | undefined {
+    for (const s of this.stops.values()) if (s.city === ci) return s;
+    return undefined;
+  }
 
   // ───────────── paradas ─────────────
 
   /** Dónde quedaría una parada: para el bus se ajusta a la calle transitable más cercana. */
-  placement(mode: Mode, x: number, y: number): { ok: boolean; x: number; y: number; rx: number; ry: number; edge: number; t: number; reason?: string; name?: string } {
+  placement(mode: Mode, x: number, y: number): { ok: boolean; x: number; y: number; rx: number; ry: number; edge: number; t: number; reason?: string; name?: string; city?: number } {
+    if (this.cities) {
+      // país: la parada es la ciudad más cercana al clic
+      const ci = this.cityAt(x, y, 30000);
+      if (ci < 0) return { ok: false, x, y, rx: x, ry: y, edge: -1, t: 0, reason: 'Haz clic sobre una ciudad' };
+      const c = this.cities[ci];
+      if (this.stopOfCity(ci)) return { ok: false, x: c.x, y: c.y, rx: c.x, ry: c.y, edge: -1, t: 0, reason: `${c.name} ya está en la red`, city: ci };
+      return { ok: true, x: c.x, y: c.y, rx: c.x, ry: c.y, edge: -1, t: 0, name: c.name, city: ci };
+    }
     if (mode === 'metro') {
       for (const s of this.stops.values()) if (s.mode === 'metro' && Math.hypot(s.x - x, s.y - y) < 120) return { ok: false, x, y, rx: x, ry: y, edge: -1, t: 0, reason: 'Demasiado cerca de otra estación' };
       return { ok: true, x, y, rx: x, ry: y, edge: -1, t: 0, name: this.nearestStreetName(x, y) };
@@ -151,8 +209,8 @@ export class Network {
     // nearestEdge devuelve la más cercana de cualquier clase; filtra probando radios crecientes
     const g = this.graph;
     let best: { edge: number; t: number; d: number } | null = null;
-    const r = Math.ceil(maxDist / HASH);
-    const cx = Math.floor(x / HASH), cy = Math.floor(y / HASH);
+    const r = Math.ceil(maxDist / g.cell);
+    const cx = Math.floor(x / g.cell), cy = Math.floor(y / g.cell);
     const seen = new Set<number>();
     for (let i = cx - r; i <= cx + r; i++) for (let j = cy - r; j <= cy + r; j++) {
       const l = g.edgesInCell(i, j);
@@ -182,8 +240,9 @@ export class Network {
     const p = this.placement(mode, x, y);
     if (!p.ok) return null;
     let node = -1;
-    if (mode === 'bus') node = this.graph.splitEdge(p.edge, p.t);
-    const stop: Stop = { id: this.nextStop++, mode, x: p.x, y: p.y, rx: p.rx, ry: p.ry, node, name: this.uniqueName(p.name ?? 'Parada'), lines: [], queue: [], frustrated: 0 };
+    if (this.cities) node = this.graph.nearestNode(p.x, p.y, 25000, true); // enlace de autopista más cercano (bus)
+    else if (mode === 'bus') node = this.graph.splitEdge(p.edge, p.t);
+    const stop: Stop = { id: this.nextStop++, mode, x: p.x, y: p.y, rx: p.rx, ry: p.ry, node, name: this.uniqueName(p.name ?? 'Parada'), lines: [], queue: [], frustrated: 0, city: p.city };
     this.stops.set(stop.id, stop);
     this.version++;
     return stop;
@@ -216,7 +275,7 @@ export class Network {
   createLine(mode: Mode): Line {
     const used = new Set([...this.lines.values()].map(l => l.color));
     const color = LINE_COLORS.find(c => !used.has(c)) ?? LINE_COLORS[this.lines.size % LINE_COLORS.length];
-    const line: Line = { id: this.nextLine++, mode, color, name: `${mode === 'bus' ? 'Línea' : 'Metro'} ${this.nextLine - 1}`, stops: [], vias: [], loop: false, fwd: [], back: [], length: 0, vehicles: [], warnings: 0, boarded: 0, boardedToday: 0, incomeToday: 0 };
+    const line: Line = { id: this.nextLine++, mode, color, name: `${LINE_PREFIX[mode]} ${this.nextLine - 1}`, stops: [], vias: [], loop: false, fwd: [], back: [], length: 0, vehicles: [], warnings: 0, boarded: 0, boardedToday: 0, incomeToday: 0 };
     this.lines.set(line.id, line);
     this.version++;
     return line;
@@ -235,7 +294,7 @@ export class Network {
   /** Añade una parada al final de la línea. Si es la primera parada, cierra el bucle. */
   appendStop(line: Line, stopId: number): 'added' | 'closed' | 'invalid' {
     const s = this.stops.get(stopId);
-    if (!s || s.mode !== line.mode) return 'invalid';
+    if (!s || (s.mode !== line.mode && s.mode !== 'hub')) return 'invalid';
     if (line.loop) return 'invalid';
     if (line.stops.length >= 3 && stopId === line.stops[0]) { line.loop = true; line.vias[line.stops.length - 1] = []; this.rebuild(line); return 'closed'; }
     if (line.stops.includes(stopId)) return 'invalid';
@@ -270,6 +329,15 @@ export class Network {
   extensionLength(line: Line, stopId: number): number {
     if (!line.stops.length) return 0;
     const a = this.stops.get(line.stops[line.stops.length - 1])!, b = this.stops.get(stopId)!;
+    return this.trueDistance(a, b);
+  }
+
+  /** Distancia real entre dos paradas: en los niveles de país, por coordenadas geográficas (Canarias va dibujada en un recuadro). */
+  trueDistance(a: Stop, b: Stop): number {
+    if (this.cities && a.city !== undefined && b.city !== undefined) {
+      const ca = this.cities[a.city], cb = this.cities[b.city];
+      if (ca.inset || cb.inset) return haversine(ca.lat, ca.lon, cb.lat, cb.lon);
+    }
     return Math.hypot(a.x - b.x, a.y - b.y);
   }
 
@@ -289,7 +357,7 @@ export class Network {
         let t = l2 > 0 ? ((x - a.x) * dx + (y - a.y) * dy) / l2 : 0;
         t = Math.max(0, Math.min(1, t));
         const d = Math.hypot(x - (a.x + dx * t), y - (a.y + dy * t));
-        if (d <= maxDist && (!best || d < best.d)) best = { seg: si, t: (sg.cum[i] + t * (sg.cum[i + 1] - sg.cum[i])) / (sg.len || 1), d };
+        if (d <= maxDist && (!best || d < best.d)) best = { seg: si, t: (sg.cum[i] + t * (sg.cum[i + 1] - sg.cum[i])) / (sg.geomLen || 1), d };
       }
     });
     return best;
@@ -306,14 +374,14 @@ export class Network {
       let t = l2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : 0;
       t = Math.max(0, Math.min(1, t));
       const d = Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
-      if (d < bd) { bd = d; best = (sg.cum[i] + t * (sg.cum[i + 1] - sg.cum[i])) / (sg.len || 1); }
+      if (d < bd) { bd = d; best = (sg.cum[i] + t * (sg.cum[i + 1] - sg.cum[i])) / (sg.geomLen || 1); }
     }
     return best;
   }
 
   /** Ajusta un punto de paso a la red: para el bus, al nodo transitable más cercano. */
   snapVia(line: Line, p: Pt): Pt | null {
-    if (line.mode === 'metro') return p;
+    if (line.mode !== 'bus') return p;
     const n = this.graph.nearestNode(p.x, p.y, 45, true);
     if (n < 0) return null;
     return { x: this.graph.nodes[n].x, y: this.graph.nodes[n].y };
@@ -334,12 +402,20 @@ export class Network {
 
   private segment(line: Line, fromId: number, toId: number, vias: Pt[] = []): Segment {
     const a = this.stops.get(fromId)!, b = this.stops.get(toId)!;
-    const mk = (pts: Pt[], straight: boolean): Segment => {
+    const mk = (pts: Pt[], straight: boolean, trueLen?: number): Segment => {
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
-      return { pts, cum, len: cum[cum.length - 1], straight };
+      const geomLen = cum[cum.length - 1];
+      return { pts, cum, len: trueLen ?? geomLen, geomLen, straight };
     };
-    if (line.mode === 'metro' || a.node < 0 || b.node < 0) return mk([{ x: a.x, y: a.y }, ...vias.map(v => ({ ...v })), { x: b.x, y: b.y }], true);
+    if (line.mode !== 'bus' || a.node < 0 || b.node < 0) {
+      const pts = [{ x: a.x, y: a.y }, ...vias.map(v => ({ ...v })), { x: b.x, y: b.y }];
+      const geom = pts.reduce((acc, p, i) => i ? acc + Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y) : 0, 0);
+      const real = this.trueDistance(a, b);
+      if (line.mode === 'ship' && this.landCheck?.(pts)) line.warnings++;
+      // en Canarias la distancia dibujada no es la real: el tiempo de viaje se escala
+      return mk(pts, true, geom > 0 && Math.abs(real - geom) > 1 ? real * (geom / Math.hypot(a.x - b.x, a.y - b.y) || 1) : undefined);
+    }
     // nodos por los que debe pasar: parada, puntos de paso, parada
     const nodes = [a.node, ...vias.map(v => this.graph.nearestNode(v.x, v.y, 60, true)).filter(n => n >= 0), b.node];
     const pts: Pt[] = [{ x: a.rx, y: a.ry }];
@@ -418,11 +494,12 @@ export class Network {
     const seg = this.currentSegment(v);
     if (!seg || seg.pts.length < 2) return;
     const { pts, cum } = seg;
+    const sg = seg.len > 0 ? (v.s / seg.len) * seg.geomLen : 0;
     let i = 1;
-    while (i < cum.length - 1 && cum[i] < v.s) i++;
+    while (i < cum.length - 1 && cum[i] < sg) i++;
     const a = pts[i - 1], b = pts[i];
     const l = cum[i] - cum[i - 1] || 1;
-    const t = Math.max(0, Math.min(1, (v.s - cum[i - 1]) / l));
+    const t = Math.max(0, Math.min(1, (sg - cum[i - 1]) / l));
     v.x = a.x + (b.x - a.x) * t; v.y = a.y + (b.y - a.y) * t;
     v.angle = Math.atan2(b.y - a.y, b.x - a.x);
   }
@@ -490,13 +567,15 @@ export class Network {
     // suben
     const cap = MODE[line.mode].capacity;
     const n = line.stops.length;
+    // en las cabeceras el vehículo da la vuelta: el sentido que importa es el de salida
+    const dir = line.loop ? v.dir : si === n - 1 ? -1 : si === 0 ? 1 : v.dir;
     for (let i = 0; i < stop.queue.length && v.passengers.length < cap;) {
       const p = stop.queue[i];
       const leg = p.legs[p.leg];
       let ok = leg.line === line.id && leg.from === stopId;
       if (ok && !line.loop) {
         const toIdx = line.stops.indexOf(leg.to);
-        ok = v.dir === 1 ? toIdx > si : toIdx < si;
+        ok = dir === 1 ? toIdx > si : toIdx < si;
       } else if (ok && line.loop) ok = line.stops.includes(leg.to) && n > 1;
       if (ok) { stop.queue.splice(i, 1); v.passengers.push(p); line.boarded++; line.boardedToday++; } else i++;
     }
@@ -632,4 +711,12 @@ export class Network {
 
   get waiting(): number { let n = 0; for (const s of this.stops.values()) n += s.queue.length; return n; }
   get riding(): number { let n = 0; for (const l of this.lines.values()) for (const v of l.vehicles) n += v.passengers.length; return n; }
+}
+
+/** Distancia sobre la Tierra entre dos puntos (m). */
+export function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000, r = Math.PI / 180;
+  const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }

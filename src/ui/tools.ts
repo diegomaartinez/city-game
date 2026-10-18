@@ -4,13 +4,14 @@ import type { Pt } from '../data/types.ts';
 import { pointSegment } from '../data/geo.ts';
 import type { Game } from '../sim/game.ts';
 import { MODE, PEOPLE_PER_PASSENGER, type Line, type Mode, type Stop } from '../sim/transit.ts';
-import type { MapRenderer } from '../render/mapRenderer.ts';
 import type { TransitRenderer } from '../render/transitRenderer.ts';
 import type { World } from '../render/world.ts';
 
 export type Tool = 'pan' | 'stop:bus' | 'stop:metro' | 'line' | 'remove';
 
 export interface Hover { text: string; sub?: string }
+/** Lo que las herramientas necesitan del dibujante del mapa (ciudad o país). */
+export interface MapLike { describe(x: number, y: number): Hover | null }
 
 export class Tools {
   tool: Tool = 'pan';
@@ -32,7 +33,7 @@ export class Tools {
   /** Arrastre de un punto de paso de la línea seleccionada. */
   private viaDrag: { line: Line; seg: number; idx: number; vias: Pt[] } | null = null;
 
-  constructor(private world: World, private game: Game, private map: MapRenderer, private transit: TransitRenderer) {
+  constructor(private world: World, private game: Game, private map: MapLike, private transit: TransitRenderer) {
     world.overlay.addChild(this.preview);
     const c = world.app.canvas;
     c.addEventListener('pointerdown', e => this.down(e));
@@ -55,13 +56,19 @@ export class Tools {
 
   hintFor(t: Tool): string {
     switch (t) {
-      case 'pan': return this.selected ? 'Arrastra la línea seleccionada para cambiar su recorrido · arrastra sus puntos de paso para moverlos · Esc deselecciona' : 'Arrastra para moverte · rueda para ampliar · clic en una línea o parada para ver sus detalles';
+      case 'pan': return this.selected ? 'Arrastra la línea seleccionada para cambiar su recorrido · arrastra sus puntos de paso para moverlos · Esc deselecciona' : this.game.country ? 'Arrastra para moverte · rueda para ampliar · elige un modo (T, B, P, S) y haz clic en las ciudades para trazar una línea' : 'Arrastra para moverte · rueda para ampliar · clic en una línea o parada para ver sus detalles';
       case 'stop:bus': return `Clic junto a una calle para poner una parada de bus (${MODE.bus.stopCost.toLocaleString('es-ES')} €) · los vecinos caminan hasta ${MODE.bus.walk} m`;
       case 'stop:metro': return `Clic para poner una estación de metro (${MODE.metro.stopCost.toLocaleString('es-ES')} €) · atrae viajeros a ${MODE.metro.walk} m`;
       case 'line': {
         const l = this.editing;
         if (!l) return '';
         const n = l.stops.length;
+        if (this.game.country) {
+          const def = MODE[l.mode];
+          const costs = `${def.stopName.toLowerCase()} ${Math.round(def.stopCost / 1e6)} M€${def.trackCost ? ` · vía ${(def.trackCost / 1000).toFixed(1)} M€/km` : ''}`;
+          if (n === 0) return `${l.name}: haz clic en la primera ciudad · ${costs}`;
+          return `${l.name}: ${n} ciudad${n === 1 ? '' : 'es'} · clic en la siguiente${n >= 3 ? ', en la primera para cerrar el bucle' : ''} · Enter o Esc para terminar · ${costs}`;
+        }
         if (n === 0) return `${l.name}: haz clic en la primera ${MODE[l.mode].stopName.toLowerCase()}`;
         const extra = l.mode === 'metro' ? ` · túnel ${MODE.metro.trackCost} €/m` : '';
         return `${l.name}: ${n} parada${n === 1 ? '' : 's'} · clic en la siguiente${n >= 3 ? ', en la primera para cerrar el bucle' : ''} · Enter o Esc para terminar${extra}`;
@@ -198,8 +205,10 @@ export class Tools {
       case 'line': {
         const l = this.editing;
         if (!l) break;
-        const s = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
-        if (!s) { this.onHint('Haz clic sobre una parada. Si no hay, pon una primero (B o M).'); break; }
+        let s = this.game.net.stopAt(w.x, w.y, 14 * Math.max(1, 1.5 / this.world.zoom));
+        // país: la ciudad entra en la red con el primer clic
+        if (!s && this.game.country) s = this.game.addStop('hub', w.x, w.y) ?? undefined;
+        if (!s) { this.onHint(this.game.country ? 'Haz clic sobre una ciudad.' : 'Haz clic sobre una parada. Si no hay, pon una primero (B o M).'); break; }
         const r = this.game.appendStop(l, s.id);
         if (r === 'closed') { this.finishLine(); this.setTool('pan'); }
         else if (r === 'added') { this.transit.drawNetwork(); this.onHint(this.hintFor('line')); this.onSelect(l, null); }

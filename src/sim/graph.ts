@@ -21,7 +21,7 @@ export const WRONG_WAY = 6;
 export const NEAR_STOP = 90;
 export const DRIVABLE = (cls: RoadClass) => cls !== 'pedestrian' && cls !== 'motorway';
 
-export const HASH = 60; // metros por celda del índice espacial
+export const HASH = 60; // metros por celda del índice espacial (ciudad); los niveles de país usan celdas mayores
 
 class MinHeap {
   private a: Array<[number, number]> = [];
@@ -54,11 +54,15 @@ export class RoadGraph {
   private edgeHash = new Map<number, number[]>();
   /** Cambia cada vez que se edita el grafo (para invalidar rutas y redibujar). */
   version = 0;
+  /** Tamaño de celda del índice espacial (m). */
+  readonly cell: number;
+
+  constructor(cell = HASH) { this.cell = cell; }
 
   /** Aristas indexadas en la celda (i, j) del índice espacial. */
   edgesInCell(i: number, j: number): number[] | undefined { return this.edgeHash.get((i + 32768) * 65536 + (j + 32768)); }
 
-  private hkey(x: number, y: number): number { return (Math.floor(x / HASH) + 32768) * 65536 + (Math.floor(y / HASH) + 32768); }
+  private hkey(x: number, y: number): number { return (Math.floor(x / this.cell) + 32768) * 65536 + (Math.floor(y / this.cell) + 32768); }
 
   addNode(x: number, y: number): number {
     const i = this.nodes.length;
@@ -81,8 +85,8 @@ export class RoadGraph {
 
   private indexEdge(i: number) {
     const e = this.edges[i], na = this.nodes[e.a], nb = this.nodes[e.b];
-    const x0 = Math.floor(Math.min(na.x, nb.x) / HASH), x1 = Math.floor(Math.max(na.x, nb.x) / HASH);
-    const y0 = Math.floor(Math.min(na.y, nb.y) / HASH), y1 = Math.floor(Math.max(na.y, nb.y) / HASH);
+    const x0 = Math.floor(Math.min(na.x, nb.x) / this.cell), x1 = Math.floor(Math.max(na.x, nb.x) / this.cell);
+    const y0 = Math.floor(Math.min(na.y, nb.y) / this.cell), y1 = Math.floor(Math.max(na.y, nb.y) / this.cell);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
       const k = (x + 32768) * 65536 + (y + 32768);
       let l = this.edgeHash.get(k); if (!l) this.edgeHash.set(k, (l = [])); l.push(i);
@@ -97,8 +101,8 @@ export class RoadGraph {
     this.version++;
   }
 
-  static fromRoads(roads: RoadWay[]): RoadGraph {
-    const g = new RoadGraph();
+  static fromRoads(roads: RoadWay[], cell?: number): RoadGraph {
+    const g = new RoadGraph(cell);
     const byOsm = new Map<number, number>();
     for (const r of roads) {
       let prev = -1;
@@ -116,8 +120,8 @@ export class RoadGraph {
 
   /** Nodo más cercano a (x, y) dentro de `maxDist`, opcionalmente solo con calles transitables. */
   nearestNode(x: number, y: number, maxDist: number, drivableOnly = false): number {
-    const r = Math.ceil(maxDist / HASH);
-    const cx = Math.floor(x / HASH), cy = Math.floor(y / HASH);
+    const r = Math.ceil(maxDist / this.cell);
+    const cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell);
     let best = -1, bd = maxDist * maxDist;
     for (let i = cx - r; i <= cx + r; i++) for (let j = cy - r; j <= cy + r; j++) {
       const l = this.nodeHash.get((i + 32768) * 65536 + (j + 32768));
@@ -135,8 +139,8 @@ export class RoadGraph {
 
   /** Arista más cercana a (x, y) dentro de `maxDist`. */
   nearestEdge(x: number, y: number, maxDist: number): { edge: number; t: number; d: number } | null {
-    const r = Math.ceil(maxDist / HASH);
-    const cx = Math.floor(x / HASH), cy = Math.floor(y / HASH);
+    const r = Math.ceil(maxDist / this.cell);
+    const cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell);
     let best: { edge: number; t: number; d: number } | null = null;
     const seen = new Set<number>();
     for (let i = cx - r; i <= cx + r; i++) for (let j = cy - r; j <= cy + r; j++) {

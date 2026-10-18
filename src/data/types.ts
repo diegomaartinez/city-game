@@ -51,8 +51,47 @@ export interface Zone { id: number; kind: LanduseKind; poly: Pt[]; area: number;
 /** Barrio o distrito con nombre (nodo place de OSM), para dar nombre a los barrios del juego. */
 export interface PlaceNode { name: string; kind: 'neighbourhood' | 'quarter' | 'suburb' | 'town' | 'village'; x: number; y: number }
 
+export type LevelKind = 'city' | 'country';
+
+/** Ciudad de un nivel de país: nodo entre el que se tienden las líneas. */
+export interface City {
+  id: number;
+  name: string;
+  /** Posición dibujada (metros locales); las ciudades del recuadro de Canarias van desplazadas. */
+  x: number;
+  y: number;
+  lat: number;
+  lon: number;
+  pop: number;
+  airport: boolean;
+  coastal: boolean;
+  /** Código de país (ES, PT, AD, GI). */
+  country: string;
+  /** Está en el recuadro aparte (Canarias). */
+  inset?: boolean;
+}
+
+/** Geometría de un nivel de país. */
+export interface CountryMap {
+  /** Polígonos de tierra jugable (España, Portugal, Andorra, Gibraltar). */
+  land: Pt[][];
+  /** Tierra de países vecinos, solo decorativa. */
+  foreign: Pt[][];
+  /** Fronteras terrestres. */
+  borders: Pt[][];
+  /** Recuadro del inset (Canarias) en metros locales, y su etiqueta. */
+  inset?: { x0: number; y0: number; x1: number; y1: number; label: string };
+}
+
 export interface CityData {
   name: string;
+  /** Tipo de nivel: ciudad (calles y edificios) o país (ciudades y grandes infraestructuras). */
+  kind?: LevelKind;
+  /** Mitad del ancho y del alto del rectángulo jugable (niveles de país); en ciudades es `radius`. */
+  halfW?: number;
+  halfH?: number;
+  cities?: City[];
+  map?: CountryMap;
   lat: number;
   lon: number;
   /** Radio cargado en metros (lado del cuadrado jugable / 2, menos el margen). */

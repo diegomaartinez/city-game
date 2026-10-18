@@ -6,7 +6,7 @@ import { MODE, PEOPLE_PER_PASSENGER, type Line, type Mode, type Stop, type Vehic
 import type { World } from './world.ts';
 import { INK, STYLES, type MapStyle } from './palette.ts';
 
-const LINE_WIDTH: Record<Mode, number> = { bus: 3.6, metro: 5.5 };
+const LINE_WIDTH: Record<Mode, number> = { bus: 3.6, metro: 5.5, hub: 4, train: 5.5, plane: 3, ship: 4.5 };
 
 /** Capas de demanda: hexágonos de demanda sin cubrir y hexágonos de población. */
 export type Overlay = 'none' | 'hexDemand' | 'hexPop';
@@ -27,6 +27,8 @@ export class TransitRenderer {
   private vehicleSprites = new Map<Vehicle, { body: Sprite; full: Sprite }>();
   private busTex: Texture;
   private metroTex: Texture;
+  private planeTex: Texture;
+  private shipTex: Texture;
   private dotTex: Texture;
   /** Línea resaltada (en edición o seleccionada); las demás se atenúan. */
   highlight: Line | null = null;
@@ -49,6 +51,8 @@ export class TransitRenderer {
     this.hexLayer.addChild(this.hexG);
     this.busTex = this.makeVehicleTexture(11, 3.2, false);
     this.metroTex = this.makeVehicleTexture(30, 3.6, true);
+    this.planeTex = this.makePlaneTexture();
+    this.shipTex = this.makeShipTexture();
     this.dotTex = this.makeDotTexture();
     game.on('network', () => this.drawNetwork());
   }
@@ -59,9 +63,11 @@ export class TransitRenderer {
     this.ink = d.ink;
     this.casing = style === 'maqueta' ? INK : 0xffffff;
     this.stopFill = style === 'maqueta' ? 0xf7e8d2 : 0xffffff;
-    this.busTex.destroy(true); this.metroTex.destroy(true);
+    this.busTex.destroy(true); this.metroTex.destroy(true); this.planeTex.destroy(true); this.shipTex.destroy(true);
     this.busTex = this.makeVehicleTexture(11, 3.2, false);
     this.metroTex = this.makeVehicleTexture(30, 3.6, true);
+    this.planeTex = this.makePlaneTexture();
+    this.shipTex = this.makeShipTexture();
     for (const [, sp] of this.vehicleSprites) { sp.body.destroy(); sp.full.destroy(); }
     this.vehicleSprites.clear();
     this.overlayTimer = 9;
@@ -130,7 +136,7 @@ export class TransitRenderer {
     const colors = s.lines.map(id => this.game.net.lines.get(id)?.color ?? this.ink);
     const k = this.k;
     const ink = this.ink;
-    if (s.mode === 'metro') {
+    if (s.mode === 'metro' || s.mode === 'hub') {
       const r = (6 + Math.min(3, colors.length)) * k;
       g.circle(s.x, s.y, r + 1.5 * k).fill({ color: 0xffffff, alpha: 0.6 * alpha });
       g.circle(s.x, s.y, r).fill({ color: 0xffffff, alpha }).stroke({ color: ink, width: 2 * k, alpha });
@@ -255,6 +261,41 @@ export class TransitRenderer {
     return Texture.from(c);
   }
 
+  private texFor(mode: Mode): Texture {
+    return mode === 'bus' ? this.busTex : mode === 'plane' ? this.planeTex : mode === 'ship' ? this.shipTex : this.metroTex;
+  }
+
+  /** Avión visto desde arriba (apunta a +x). */
+  private makePlaneTexture(): Texture {
+    const S = 8, len = 16, wid = 14;
+    const c = document.createElement('canvas');
+    c.width = len * S + 4; c.height = wid * S + 4;
+    const ctx = c.getContext('2d')!;
+    ctx.translate(2, 2);
+    const ink = '#' + this.ink.toString(16).padStart(6, '0');
+    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = ink; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    const P = (pts: number[][]) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * S, y * S) : ctx.moveTo(x * S, y * S))); ctx.closePath(); ctx.fill(); ctx.stroke(); };
+    // alas, cola y fuselaje
+    P([[6, 7], [9, 0.5], [10.5, 0.5], [9.5, 7], [10.5, 13.5], [9, 13.5]]);
+    P([[1, 7], [0.5, 4], [2, 4], [3.5, 7], [2, 10], [0.5, 10]]);
+    P([[0.5, 6], [14, 5.5], [16, 7], [14, 8.5], [0.5, 8]]);
+    return Texture.from(c);
+  }
+
+  /** Barco visto desde arriba (proa a +x). */
+  private makeShipTexture(): Texture {
+    const S = 8, len = 22, wid = 6;
+    const c = document.createElement('canvas');
+    c.width = len * S + 4; c.height = wid * S + 4;
+    const ctx = c.getContext('2d')!;
+    ctx.translate(2, 2);
+    const ink = '#' + this.ink.toString(16).padStart(6, '0');
+    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = ink; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0.5 * S); ctx.lineTo(16 * S, 0.5 * S); ctx.quadraticCurveTo(22 * S, 3 * S, 16 * S, 5.5 * S); ctx.lineTo(0, 5.5 * S); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(40,45,60,.7)'; ctx.fillRect(3 * S, 1.6 * S, 9 * S, 2.8 * S);
+    return Texture.from(c);
+  }
+
   private makeDotTexture(): Texture {
     const c = document.createElement('canvas'); c.width = c.height = 16;
     const ctx = c.getContext('2d')!;
@@ -273,14 +314,14 @@ export class TransitRenderer {
         seen.add(v);
         let sp = this.vehicleSprites.get(v);
         if (!sp) {
-          const body = new Sprite(line.mode === 'bus' ? this.busTex : this.metroTex);
+          const body = new Sprite(this.texFor(line.mode));
           body.anchor.set(0.5);
           const full = new Sprite(this.dotTex); full.anchor.set(0.5); full.visible = false;
           this.world.vehicles.addChild(body, full);
           sp = { body, full };
           this.vehicleSprites.set(v, sp);
         }
-        if (sp.body.texture !== (line.mode === 'bus' ? this.busTex : this.metroTex)) sp.body.texture = line.mode === 'bus' ? this.busTex : this.metroTex;
+        if (sp.body.texture !== this.texFor(line.mode)) sp.body.texture = this.texFor(line.mode);
         sp.body.position.set(v.x, v.y);
         sp.body.rotation = v.angle;
         sp.body.tint = line.color;

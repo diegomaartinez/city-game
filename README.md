@@ -1,6 +1,6 @@
 # Little Transit
 
-**Diseña el transporte de ciudades de verdad, sin prisas.** Elige una ciudad preparada (de momento A Coruña y su área metropolitana) con sus calles y edificios reales de OpenStreetMap y, a partir de ahí, los vecinos quieren moverse: pon paradas, traza líneas de bus y metro, añade vehículos y consigue que lleguen a tiempo. Al estilo de *Mini Metro*, pero sobre el plano real.
+**Diseña el transporte de ciudades de verdad, sin prisas.** Elige un nivel: una ciudad (A Coruña y su área metropolitana) con sus calles y edificios reales de OpenStreetMap, o el **modo país** (España, Portugal y Andorra, con Baleares, Canarias, Ceuta y Melilla) donde unes ciudades en tren, bus, avión y barco. En la ciudad, a partir de ahí, los vecinos quieren moverse: pon paradas, traza líneas de bus y metro, añade vehículos y consigue que lleguen a tiempo. Al estilo de *Mini Metro*, pero sobre el plano real.
 
 **Juega en el navegador:** https://diegomaartinez.github.io/city-game/ (se publica solo desde `main` con GitHub Actions).
 
@@ -32,6 +32,14 @@ Estilo propio de plano de transporte: ciudad discreta sobre papel claro y las l�
 | Fichas de barrio | `F` |
 | Pausa · rápido · muy rápido | `Espacio` · `2` · `3` |
 | Menú / cancelar | `Esc` |
+
+## Modo país
+
+- Todas las ciudades de más de 50.000 habitantes de España, Portugal y Andorra (más capitales de provincia menores, Ceuta, Melilla y Gibraltar), con su población real. La demanda entre dos ciudades sigue un modelo de gravedad: población × población / distancia^1,6.
+- **Tren**: vía nueva pagada por kilómetro, rápido y de gran capacidad. **Bus**: barato y lento, circula por las autopistas reales (OSM). **Avión**: solo entre ciudades con aeropuerto (dato de OSM), muy rápido. **Barco**: solo entre ciudades costeras; si el trazado cruza tierra avisa y se arrastra para rodear la costa. Transbordos entre modos en la misma ciudad.
+- Canarias va en un recuadro abajo a la derecha, pero los tiempos de viaje usan la distancia real.
+- Cada punto son 100 personas y el dinero va en millones; los mismos modos de juego, préstamos e hitos (empiezas con tren y bus; el avión y el barco se desbloquean).
+- Se construye con `scripts/build-country.ts`: costa y fronteras de Natural Earth (paquete `world-atlas`), ciudades, aeropuertos y autopistas de Overpass.
 
 ## Desarrollo
 

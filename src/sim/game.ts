@@ -1,9 +1,10 @@
 // Estado de la partida: reloj, dinero, red, demanda, modos de juego (subvenciones, préstamos,
 // quiebra), hitos que desbloquean líneas y metro, estadísticas diarias y guardado.
 import { MARGIN, type CityData } from '../data/types.ts';
+import { pointInPoly } from '../data/geo.ts';
 import { RoadGraph } from './graph.ts';
 import { Demand } from './demand.ts';
-import { FARES, MODE, Network, PEOPLE_PER_PASSENGER, type Line, type Mode, type NetworkStats, type Stop } from './transit.ts';
+import { CITY_MODES, COUNTRY_MODES, FARES, MODE, Network, PEOPLE_PER_PASSENGER, applyLevelKind, type Line, type Mode, type NetworkStats, type Stop } from './transit.ts';
 
 /** Minutos de reloj que pasan por cada segundo de juego. */
 export const MINUTES_PER_SECOND = 2;
@@ -37,19 +38,22 @@ export const GAME_MODE_LIST: GameMode[] = ['facil', 'normal', 'creativo'];
 
 export const LOAN_STEP = 500_000;
 export const MAX_DEBT = 4_000_000;
+/** En los niveles de país el dinero va en millones: todas las cifras de la economía se multiplican por esto. */
+export const COUNTRY_MONEY = 1000;
 /** Interés diario sobre la deuda. */
 export const LOAN_INTEREST = 0.004;
 
 // ───────────── hitos ─────────────
 
-export interface MilestoneDef { id: string; title: string; kind: 'daily' | 'total'; share: number; money: number; lines: number; metro?: boolean }
-export interface Milestone extends MilestoneDef { target: number; done: boolean }
+export interface MilestoneDef { id: string; title: string; kind: 'daily' | 'total'; share: number; money: number; lines: number; metro?: boolean; /** Modo que desbloquea en un nivel de país. */ country?: Mode }
+/** `unlocks`: modos que quedan disponibles al cumplirlo. */
+export interface Milestone extends MilestoneDef { target: number; done: boolean; unlocks: Mode[] }
 
 /** Objetivos en orden; `share` es la fracción de la población (viajeros al día o acumulados). */
 export const MILESTONES: MilestoneDef[] = [
   { id: 'arranque', title: 'Primeros viajeros', kind: 'daily', share: 0.006, money: 100_000, lines: 1 },
-  { id: 'metro', title: 'Llega el metro', kind: 'total', share: 0.06, money: 400_000, lines: 1, metro: true },
-  { id: 'red', title: 'Una red de verdad', kind: 'daily', share: 0.04, money: 200_000, lines: 1 },
+  { id: 'metro', title: 'Llega el metro', kind: 'total', share: 0.06, money: 400_000, lines: 1, metro: true, country: 'plane' },
+  { id: 'red', title: 'Una red de verdad', kind: 'daily', share: 0.04, money: 200_000, lines: 1, country: 'ship' },
   { id: 'barrios', title: 'Toda la ciudad se mueve', kind: 'daily', share: 0.08, money: 400_000, lines: 2 },
   { id: 'veterano', title: 'Un millón de viajes', kind: 'total', share: 0.6, money: 800_000, lines: 2 },
   { id: 'leyenda', title: 'Transporte de referencia', kind: 'daily', share: 0.15, money: 1_500_000, lines: 99 },
@@ -86,8 +90,8 @@ export interface Summary {
   potentialPeople: number;
   coverage: number;
   today: { delivered: number; lost: number; unserved: number; rejected: number; avgTrip: number };
-  stops: Record<Mode, number>;
-  vehicles: Record<Mode, number>;
+  stops: Partial<Record<Mode, number>>;
+  vehicles: Partial<Record<Mode, number>>;
   capacity: number;
   waiting: number;
   riding: number;
@@ -115,6 +119,12 @@ export class Game {
   readonly demand: Demand;
   readonly def: ModeDef;
   readonly milestones: Milestone[];
+  /** Nivel de país (ciudades unidas por tren, bus, avión y barco). */
+  readonly country: boolean;
+  /** Modos con los que se trazan líneas en este nivel. */
+  readonly modes: Mode[];
+  /** Factor de la economía (1 en ciudad, 1000 en país). */
+  readonly moneyScale: number;
   money: number;
   debt = 0;
   /** Días seguidos cerrados con saldo negativo. */
@@ -136,13 +146,25 @@ export class Game {
 
   constructor(public readonly data: CityData, public readonly mode: GameMode = 'normal') {
     this.def = GAME_MODES[mode];
-    this.money = this.def.start;
-    this.graph = RoadGraph.fromRoads(data.roads);
+    this.country = data.kind === 'country';
+    this.modes = this.country ? COUNTRY_MODES : CITY_MODES;
+    this.moneyScale = this.country ? COUNTRY_MONEY : 1;
+    applyLevelKind(this.country);
+    this.money = this.def.start * this.moneyScale;
+    this.graph = RoadGraph.fromRoads(data.roads, this.country ? 3000 : undefined);
     this.net = new Network(this.graph);
+    if (this.country) { this.net.cities = data.cities ?? []; this.net.landCheck = pts => this.crossesLand(pts); }
     this.demand = new Demand(data, this.net, this.graph);
     this.dayStart = { ...this.net.stats };
-    const pop = Math.max(50, this.demand.population);
-    this.milestones = MILESTONES.map(m => ({ ...m, target: Math.max(5, Math.ceil((pop * m.share) / PEOPLE_PER_PASSENGER)), done: !this.def.milestones }));
+    // los objetivos van en proporción a los viajes potenciales diarios (la cuota de población se definió para la ciudad)
+    const potential = Math.max(5, this.demand.dailyPotential(1));
+    const perPop = this.country ? potential / 0.35 : Math.max(50, this.demand.population) / PEOPLE_PER_PASSENGER;
+    void potential;
+    this.milestones = MILESTONES.map(m => ({
+      ...m, money: m.money * this.moneyScale,
+      target: Math.max(5, Math.ceil(perPop * m.share)), done: !this.def.milestones,
+      unlocks: this.country ? (m.country ? [m.country] : []) : (m.metro ? ['metro'] : []),
+    }));
     this.net.onDelivered = p => {
       const fare = this.net.planFare(p.legs) * PEOPLE_PER_PASSENGER;
       this.money += fare; this.dayIncome += fare;
@@ -200,13 +222,20 @@ export class Game {
     for (const m of this.milestones) if (m.done) n += m.lines;
     return n >= 99 ? Infinity : n;
   }
-  get metroUnlocked(): boolean { return !this.def.milestones || this.milestones.some(m => m.metro && m.done); }
-  /** Qué hace falta para usar el metro (o '' si ya está disponible). */
-  get metroLockText(): string {
-    const m = this.milestones.find(x => x.metro);
-    if (!m || m.done) return '';
-    return `El metro se desbloquea con el hito «${m.title}»: ${(m.target * PEOPLE_PER_PASSENGER).toLocaleString('es-ES')} viajeros en total`;
+  /** ¿Está disponible este modo? (el metro, el avión y el barco llegan con los hitos). */
+  unlocked(mode: Mode): boolean {
+    if (!this.def.milestones) return true;
+    const m = this.milestones.find(x => x.unlocks.includes(mode));
+    return !m || m.done;
   }
+  /** Qué hace falta para usar un modo (o '' si ya está disponible). */
+  lockText(mode: Mode): string {
+    if (this.unlocked(mode)) return '';
+    const m = this.milestones.find(x => x.unlocks.includes(mode))!;
+    return `${MODE[mode].name === 'Avión' ? 'El avión' : MODE[mode].name === 'Barco' ? 'El barco' : 'El metro'} se desbloquea con el hito «${m.title}»: ${(m.target * PEOPLE_PER_PASSENGER).toLocaleString('es-ES')} viajeros ${m.kind === 'daily' ? 'en un día' : 'en total'}`;
+  }
+  get metroUnlocked(): boolean { return this.unlocked('metro'); }
+  get metroLockText(): string { return this.lockText('metro'); }
 
   private checkMilestones(): void {
     const m = this.nextMilestone;
@@ -219,13 +248,16 @@ export class Game {
 
   summary(): Summary {
     const t = this.today;
-    const stops: Record<Mode, number> = { bus: 0, metro: 0 };
-    for (const s of this.net.stops.values()) stops[s.mode]++;
-    const vehicles: Record<Mode, number> = { bus: 0, metro: 0 };
+    const stops: Partial<Record<Mode, number>> = {};
+    for (const m of this.modes) stops[m] = 0;
+    if (this.country) stops.hub = 0;
+    for (const s of this.net.stops.values()) stops[s.mode] = (stops[s.mode] ?? 0) + 1;
+    const vehicles: Partial<Record<Mode, number>> = {};
+    for (const m of this.modes) vehicles[m] = 0;
     let capacity = 0;
     const lines: Summary['lines'] = [];
     for (const l of this.net.lines.values()) {
-      vehicles[l.mode] += l.vehicles.length;
+      vehicles[l.mode] = (vehicles[l.mode] ?? 0) + l.vehicles.length;
       capacity += l.vehicles.length * MODE[l.mode].capacity;
       lines.push({ line: l, boarded: l.boardedToday, income: l.incomeToday, cost: l.vehicles.length * MODE[l.mode].upkeep });
     }
@@ -241,7 +273,7 @@ export class Game {
 
   private spend(amount: number, what: string): boolean {
     if (amount > this.money) {
-      const hint = this.def.loans && this.debt < MAX_DEBT ? ' · puedes pedir un préstamo en el resumen (R)' : '';
+      const hint = this.def.loans && this.debt < this.maxDebt ? ' · puedes pedir un préstamo en el resumen (R)' : '';
       this.emit('message', `No hay dinero para ${what} (${Math.round(amount).toLocaleString('es-ES')} €)${hint}`, 'warn');
       return false;
     }
@@ -257,16 +289,19 @@ export class Game {
 
   // ───────────── préstamos ─────────────
 
-  borrow(amount = LOAN_STEP): boolean {
+  get loanStep(): number { return LOAN_STEP * this.moneyScale; }
+  get maxDebt(): number { return MAX_DEBT * this.moneyScale; }
+
+  borrow(amount = this.loanStep): boolean {
     if (!this.def.loans) return false;
-    if (this.debt + amount > MAX_DEBT) { this.emit('message', `El banco no presta más de ${MAX_DEBT.toLocaleString('es-ES')} €`, 'warn'); return false; }
+    if (this.debt + amount > this.maxDebt) { this.emit('message', `El banco no presta más de ${this.maxDebt.toLocaleString('es-ES')} €`, 'warn'); return false; }
     this.debt += amount; this.money += amount;
     this.emit('message', `Préstamo de ${amount.toLocaleString('es-ES')} € · ${Math.round(LOAN_INTEREST * 1000) / 10} % de interés al día`, 'info');
     this.emit('money', this.money);
     return true;
   }
 
-  repay(amount = LOAN_STEP): boolean {
+  repay(amount = this.loanStep): boolean {
     const a = Math.min(amount, this.debt);
     if (a <= 0) return false;
     if (a > this.money) { this.emit('message', 'No hay saldo para devolver el préstamo', 'warn'); return false; }
@@ -277,10 +312,15 @@ export class Game {
 
   // ───────────── acciones ─────────────
 
+  /** ¿Queda un punto dentro del mapa jugable? */
+  inBounds(x: number, y: number): boolean {
+    const w = (this.data.halfW ?? this.data.radius) + MARGIN, h = (this.data.halfH ?? this.data.radius) + MARGIN;
+    return Math.abs(x) <= w && Math.abs(y) <= h;
+  }
+
   addStop(mode: Mode, x: number, y: number): Stop | null {
-    if (mode === 'metro' && !this.metroUnlocked) { this.emit('message', this.metroLockText, 'warn'); return null; }
-    const lim = this.data.radius + MARGIN;
-    if (Math.abs(x) > lim || Math.abs(y) > lim) { this.emit('message', 'Eso queda fuera del mapa', 'warn'); return null; }
+    if (!this.unlocked(mode)) { this.emit('message', this.lockText(mode), 'warn'); return null; }
+    if (!this.inBounds(x, y)) { this.emit('message', 'Eso queda fuera del mapa', 'warn'); return null; }
     const p = this.net.placement(mode, x, y);
     if (!p.ok) { if (p.reason) this.emit('message', p.reason, 'warn'); return null; }
     if (!this.spend(MODE[mode].stopCost, MODE[mode].stopName.toLowerCase())) return null;
@@ -299,7 +339,7 @@ export class Game {
 
   /** Si se puede crear otra línea (límite por hitos); si no, explica por qué. */
   canCreateLine(mode: Mode): string {
-    if (mode === 'metro' && !this.metroUnlocked) return this.metroLockText;
+    if (!this.unlocked(mode)) return this.lockText(mode);
     if (this.net.lines.size >= this.maxLines) {
       const m = this.nextMilestone;
       return `Ya tienes ${this.maxLines} líneas: el siguiente hito («${m?.title ?? ''}») te dará más`;
@@ -315,18 +355,62 @@ export class Game {
     return l;
   }
 
+  /** Coste de llevar la línea hasta una parada: vía o túnel por metro y, en los niveles de país, la infraestructura de la ciudad (estación, aeropuerto, puerto) si es la primera línea de ese modo que llega. */
   extendCost(line: Line, stopId: number): number {
-    return line.mode === 'metro' ? Math.round(this.net.extensionLength(line, stopId) * MODE.metro.trackCost) : 0;
+    const def = MODE[line.mode];
+    let cost = def.trackCost ? Math.round(this.net.extensionLength(line, stopId) * def.trackCost) : 0;
+    if (this.country) {
+      const s = this.net.stops.get(stopId);
+      const served = s ? s.lines.some(id => this.net.lines.get(id)?.mode === line.mode) : false;
+      if (s && !served) {
+        const c = s.city !== undefined ? this.net.cities?.[s.city] : undefined;
+        // un aeropuerto existente sale casi gratis; construir uno nuevo no se permite
+        cost += line.mode === 'plane' && c?.airport ? Math.round(def.stopCost * 0.1) : def.stopCost;
+      }
+    }
+    return cost;
+  }
+
+  /** País: ¿puede este modo llegar a la ciudad? Devuelve el motivo si no. */
+  private cityCheck(line: Line, s: Stop): string {
+    if (!this.country || s.city === undefined) return '';
+    const c = this.net.cities![s.city];
+    if (line.mode === 'plane' && !c.airport) return `${c.name} no tiene aeropuerto`;
+    if (line.mode === 'ship' && !c.coastal) return `${c.name} no tiene puerto: no está en la costa`;
+    return '';
+  }
+
+  /** ¿Una polilínea (trazado de un barco) atraviesa tierra, más allá de las orillas de salida y llegada? */
+  crossesLand(pts: { x: number; y: number }[]): boolean {
+    const land = this.data.map?.land ?? [];
+    if (!land.length || pts.length < 2) return false;
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+    const len = cum[cum.length - 1], step = 3000, margin = 12000;
+    let k = 1;
+    for (let d = margin; d < len - margin; d += step) {
+      while (k < cum.length - 1 && cum[k] < d) k++;
+      const a = pts[k - 1], b = pts[k], t = (d - cum[k - 1]) / ((cum[k] - cum[k - 1]) || 1);
+      const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t;
+      for (const poly of land) if (pointInPoly(x, y, poly)) return true;
+    }
+    return false;
   }
 
   appendStop(line: Line, stopId: number): 'added' | 'closed' | 'invalid' {
-    const cost = this.extendCost(line, stopId);
     const s = this.net.stops.get(stopId);
-    if (!s || s.mode !== line.mode) { this.emit('message', `Esa parada no es de ${MODE[line.mode].name.toLowerCase()}`, 'warn'); return 'invalid'; }
-    if (cost && !this.spend(cost, 'el túnel')) return 'invalid';
+    if (!s || (s.mode !== line.mode && s.mode !== 'hub')) { this.emit('message', `Esa parada no es de ${MODE[line.mode].name.toLowerCase()}`, 'warn'); return 'invalid'; }
+    const why = this.cityCheck(line, s);
+    if (why) { this.emit('message', why, 'warn'); return 'invalid'; }
+    const cost = this.extendCost(line, stopId);
+    if (cost && !this.spend(cost, line.mode === 'metro' ? 'el túnel' : line.mode === 'train' ? 'la vía y la estación' : MODE[line.mode].stopName.toLowerCase())) return 'invalid';
+    const before = line.warnings;
     const r = this.net.appendStop(line, stopId);
     if (r === 'invalid' && cost) this.refund(cost);
-    if (r !== 'invalid') this.networkChanged();
+    if (r !== 'invalid') {
+      if (line.mode === 'ship' && line.warnings > before) this.emit('message', 'El trazado cruza tierra: arrastra la línea para rodear la costa', 'warn');
+      this.networkChanged();
+    }
     return r;
   }
 
@@ -343,8 +427,19 @@ export class Game {
   }
 
   removeLine(line: Line): void {
+    let back = line.vehicles.length * Math.round(MODE[line.mode].vehicleCost * 0.5);
+    if (this.country) {
+      // la infraestructura de las ciudades que se quedan sin este modo se recupera (entera si la línea nunca llegó a operar)
+      const share = line.stops.length < 2 ? 1 : 0.5;
+      for (const sid of line.stops) {
+        const s = this.net.stops.get(sid);
+        if (!s || s.lines.some(id => id !== line.id && this.net.lines.get(id)?.mode === line.mode)) continue;
+        const c = s.city !== undefined ? this.net.cities?.[s.city] : undefined;
+        back += Math.round((line.mode === 'plane' && c?.airport ? MODE.plane.stopCost * 0.1 : MODE[line.mode].stopCost) * share);
+      }
+    }
     this.net.removeLine(line.id);
-    this.refund(line.vehicles.length * Math.round(MODE[line.mode].vehicleCost * 0.5));
+    this.refund(back);
     this.networkChanged();
   }
 
