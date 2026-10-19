@@ -25,7 +25,8 @@ export interface RoadWay {
 export interface Building {
   id: number;
   use: BuildingUse;
-  poly: Pt[];
+  /** Huella; los niveles afinados la quitan (se dibujan manzanas) y dejan solo centro y área. */
+  poly?: Pt[];
   levels: number;
   /** Área de la huella en m². */
   area: number;
@@ -36,6 +37,9 @@ export interface Building {
   service?: ServiceKind;
   name?: string;
 }
+
+/** Manzana: edificios contiguos del mismo uso fundidos en un solo polígono (anillo exterior y patios). Solo para dibujar. */
+export interface Block { use: BuildingUse; rings: Pt[][] }
 
 export type AreaKind = 'sea' | 'land' | 'park' | 'water' | 'wood' | 'grass' | 'cemetery' | 'plaza';
 
@@ -104,6 +108,8 @@ export interface CityData {
   coreBox?: [number, number, number, number];
   roads: RoadWay[];
   buildings: Building[];
+  /** Manzanas para dibujar (edificios contiguos fundidos); si faltan, se dibujan los edificios uno a uno. */
+  blocks?: Block[];
   areas: Area[];
   zones: Zone[];
   /** Barrios con nombre (nodos place). */

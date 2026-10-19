@@ -12,14 +12,25 @@ import { Hud } from './ui/hud.ts';
 import { showStart, type StartResult } from './ui/start.ts';
 import { loadStyle, saveStyle } from './render/palette.ts';
 
+const frame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
+
 async function play(start: StartResult): Promise<void> {
   const world = new World();
   await world.init(document.body);
 
+  // la pantalla de carga sigue puesta mientras se monta el juego y se dibuja la ciudad (puede tardar unos segundos en móvil)
+  start.status('Preparando la ciudad…'); await frame();
+  const t0 = performance.now();
   const game = new Game(start.city, start.mode);
+  const t1 = performance.now();
+  start.status('Dibujando el mapa…'); await frame();
   const style = loadStyle();
   const map = game.country ? new CountryRenderer(world, start.city, game.graph) : new MapRenderer(world, start.city, game.graph);
   map.drawAll(style);
+  const t2 = performance.now();
+  if (import.meta.env.DEV) console.log(`juego ${(t1 - t0).toFixed(0)} ms · mapa ${(t2 - t1).toFixed(0)} ms`);
+  // la pantalla de carga se quita cuando el primer fotograma ya está pintado
+  world.app.ticker.addOnce(() => requestAnimationFrame(() => start.done()));
   const transit = new TransitRenderer(world, game);
   transit.setStyle(style);
   const tools = new Tools(world, game, map, transit);

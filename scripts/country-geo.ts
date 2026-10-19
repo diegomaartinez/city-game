@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import * as topojson from 'topojson-client';
 import type { Topology, GeometryCollection } from 'topojson-specification';
 import { Projection } from '../src/data/geo.ts';
-import { simplify } from '../src/data/compact.ts';
+import { simplify, simplifyKeep } from '../src/data/compact.ts';
 import { pointInPoly } from '../src/data/geo.ts';
 import { CITY_VERSION, type City, type CityData, type Pt, type RoadWay } from '../src/data/types.ts';
 import { SeaGrid } from '../src/sim/sea.ts';
@@ -159,23 +159,3 @@ export function simplifyRoads(raw: RoadWay[], nodeUses: Map<number, number>, tol
   });
 }
 
-/** Douglas-Peucker por tramos entre puntos obligatorios (cruces): devuelve qué puntos se conservan. */
-export function simplifyKeep(pts: Pt[], tol: number, forced: (i: number) => boolean): Uint8Array {
-  const keep = new Uint8Array(pts.length);
-  for (let i = 0; i < pts.length; i++) if (forced(i)) keep[i] = 1;
-  const stack: Array<[number, number]> = [];
-  let last = 0;
-  for (let i = 1; i < pts.length; i++) if (keep[i]) { stack.push([last, i]); last = i; }
-  while (stack.length) {
-    const [a, b] = stack.pop()!;
-    const A = pts[a], B = pts[b], dx = B.x - A.x, dy = B.y - A.y, l2 = dx * dx + dy * dy;
-    let best = -1, bd = tol;
-    for (let i = a + 1; i < b; i++) {
-      const P = pts[i], u = l2 ? Math.max(0, Math.min(1, ((P.x - A.x) * dx + (P.y - A.y) * dy) / l2)) : 0;
-      const d = Math.hypot(P.x - (A.x + dx * u), P.y - (A.y + dy * u));
-      if (d > bd) { bd = d; best = i; }
-    }
-    if (best >= 0) { keep[best] = 1; stack.push([a, best], [best, b]); }
-  }
-  return keep;
-}

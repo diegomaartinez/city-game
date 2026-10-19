@@ -1,7 +1,7 @@
 // Dibuja la ciudad real (mar, zonas verdes, agua, calles con puentes y túneles, edificios) en el estilo
 // elegido. Es estática: se construye una vez por teselas y solo se muestran las teselas en pantalla.
 import { Graphics } from 'pixi.js';
-import type { Area, Building, CityData, Pt, ServiceKind } from '../data/types.ts';
+import type { Area, Block, Building, CityData, Pt, ServiceKind } from '../data/types.ts';
 import { pointInPoly } from '../data/geo.ts';
 import { DRIVABLE, ROAD_WIDTH, type RoadGraph } from '../sim/graph.ts';
 import type { World } from './world.ts';
@@ -23,11 +23,13 @@ export class MapRenderer {
   drawAll(style: MapStyle = this.style): void {
     this.style = style;
     const d = this.def;
-    this.world.drawGround(this.data.radius, d.bg, d.bgPatches, d.backdrop);
+    // en las ciudades con costa el mar sigue más allá del borde jugable (el fondo es mar, no "mesa")
+    const coastal = this.data.areas.some(a => a.kind === 'sea');
+    this.world.drawGround(this.data.radius, d.bg, d.bgPatches, coastal ? d.sea : d.backdrop, undefined, undefined, !coastal);
     this.drawAreas(this.data.areas);
     this.drawZones();
     this.drawRoads();
-    this.drawBuildings(this.data.buildings);
+    if (this.data.blocks) this.drawBlocks(this.data.blocks); else this.drawBuildings(this.data.buildings);
   }
 
   // ───────────── mar, zonas verdes y agua ─────────────
@@ -78,30 +80,32 @@ export class MapRenderer {
   }
 
   // ───────────── calles ─────────────
+  /** Las calles se dibujan vía a vía (polilíneas con uniones redondas): muchísimos menos triángulos que tramo a tramo,
+   * que ponía un remate redondo en cada cruce. Las aristas del grafo solo se usan para las paradas y las rutas. */
   private drawRoads(): void {
-    const { nodes, edges } = this.graph;
     const rs = this.def.road;
     const order = ['pedestrian', 'service', 'residential', 'tertiary', 'secondary', 'primary', 'motorway'] as const;
-    const layers = [...new Set(edges.filter(e => !e.removed).map(e => e.layer))].sort((a, b) => a - b);
+    const roads = this.data.roads;
+    const layers = [...new Set(roads.map(r => r.layer ?? 0))].sort((a, b) => a - b);
     this.world.roads.removeChildren();
     const width = (cls: (typeof order)[number]) => ROAD_WIDTH[cls] * rs.widthScale;
     for (const layer of layers) {
       const g = new Graphics();
       const byClass = new Map<string, number[]>();
-      for (let i = 0; i < edges.length; i++) {
-        const e = edges[i];
-        if (e.removed || e.layer !== layer) continue;
-        if (e.cls === 'pedestrian' && !rs.showPedestrian) continue;
-        if (e.cls === 'service' && !rs.showService) continue;
-        let l = byClass.get(e.cls); if (!l) byClass.set(e.cls, (l = [])); l.push(i);
+      for (let i = 0; i < roads.length; i++) {
+        const r = roads[i];
+        if ((r.layer ?? 0) !== layer || r.pts.length < 2) continue;
+        if (r.cls === 'pedestrian' && !rs.showPedestrian) continue;
+        if (r.cls === 'service' && !rs.showService) continue;
+        let l = byClass.get(r.cls); if (!l) byClass.set(r.cls, (l = [])); l.push(i);
       }
-      const path = (list: number[]) => { for (const i of list) { const e = edges[i]; g.moveTo(nodes[e.a].x, nodes[e.a].y).lineTo(nodes[e.b].x, nodes[e.b].y); } };
+      const path = (list: number[]) => { for (const i of list) { const p = roads[i].pts; g.moveTo(p[0].x, p[0].y); for (let k = 1; k < p.length; k++) g.lineTo(p[k].x, p[k].y); } };
       const tunnel = layer < 0, bridge = layer > 0;
       if (rs.casing !== null) for (const cls of order) {
         const list = byClass.get(cls); if (!list) continue;
         const w = width(cls);
         path(list);
-        if (tunnel) g.stroke({ color: rs.casing, width: w + 1.2, cap: 'butt', alpha: 0.35 });
+        if (tunnel) g.stroke({ color: rs.casing, width: w + 1.2, cap: 'butt', join: 'round', alpha: 0.35 });
         else g.stroke({ color: rs.casing, width: w + (DRIVABLE(cls) || cls === 'motorway' ? (bridge ? 4.6 : rs.sidewalk !== null ? 3.2 : 1.6) : 1.4), cap: 'round', join: 'round', alpha: rs.casingAlpha });
       }
       if (rs.sidewalk !== null && !tunnel) for (const cls of order) {
@@ -120,19 +124,55 @@ export class MapRenderer {
         for (const cls of ['primary', 'motorway', 'secondary'] as const) {
           const list = byClass.get(cls); if (!list) continue;
           for (const i of list) {
-            const e = edges[i]; const a = nodes[e.a], b = nodes[e.b];
-            if (e.len < 6) continue;
-            const ux = (b.x - a.x) / e.len, uy = (b.y - a.y) / e.len;
-            for (let s = 2; s < e.len - 2; s += 9) { const t = Math.min(e.len - 2, s + 4.5); dsh.moveTo(a.x + ux * s, a.y + uy * s).lineTo(a.x + ux * t, a.y + uy * t); }
+            const p = roads[i].pts;
+            for (let k = 0; k + 1 < p.length; k++) {
+              const a = p[k], b = p[k + 1];
+              const len = Math.hypot(b.x - a.x, b.y - a.y);
+              if (len < 6) continue;
+              const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+              for (let s = 2; s < len - 2; s += 9) { const t = Math.min(len - 2, s + 4.5); dsh.moveTo(a.x + ux * s, a.y + uy * s).lineTo(a.x + ux * t, a.y + uy * t); }
+            }
           }
         }
-        dsh.stroke({ color: rs.dashColor, width: 0.7, alpha: 0.85, cap: 'round' });
+        dsh.stroke({ color: rs.dashColor, width: 0.7, alpha: 0.85, cap: 'butt' });
         this.world.roads.addChild(g, dsh);
       } else this.world.roads.addChild(g);
     }
   }
 
-  // ───────────── edificios por teselas ─────────────
+  // ───────────── manzanas por teselas ─────────────
+  private drawBlocks(blocks: Block[]): void {
+    const d = this.def;
+    for (const t of this.tiles) t.body.destroy();
+    this.tiles = [];
+    this.world.buildings.removeChildren();
+    const groups = new Map<string, Block[]>();
+    for (const b of blocks) {
+      const p = b.rings[0][0];
+      const k = `${Math.floor(p.x / TILE)},${Math.floor(p.y / TILE)}`;
+      let l = groups.get(k); if (!l) groups.set(k, (l = [])); l.push(b);
+    }
+    // los equipamientos llevan su marca aunque ya no se dibujen uno a uno
+    const marks = this.style === 'sencillo' ? [] : this.data.buildings.filter(b => b.service);
+    const marksByTile = new Map<string, Building[]>();
+    for (const b of marks) { const k = `${Math.floor(b.cx / TILE)},${Math.floor(b.cy / TILE)}`; let l = marksByTile.get(k); if (!l) marksByTile.set(k, (l = [])); l.push(b); }
+    for (const [k, list] of groups) {
+      const [tx, ty] = k.split(',').map(Number);
+      const body = new Graphics();
+      let n = 0;
+      for (const b of list) {
+        body.poly(flat(b.rings[0]), true).fill(d.building(b.use, n++));
+        if (d.buildingStroke) body.stroke(d.buildingStroke);
+        // patios: se recortan del relleno (y del trazo) que se acaba de dibujar
+        for (let i = 1; i < b.rings.length; i++) body.poly(flat(b.rings[i]), true).cut();
+      }
+      for (const b of marksByTile.get(k) ?? []) MapRenderer.serviceMark(body, b.service!, b.cx, b.cy, 3.2, d.ink);
+      this.world.buildings.addChild(body);
+      this.tiles.push({ x0: tx * TILE, y0: ty * TILE, body });
+    }
+  }
+
+  // ───────────── edificios por teselas (niveles sin manzanas) ─────────────
   private drawBuildings(buildings: Building[]): void {
     const d = this.def;
     for (const t of this.tiles) t.body.destroy();
@@ -147,6 +187,7 @@ export class MapRenderer {
       const [tx, ty] = k.split(',').map(Number);
       const body = new Graphics();
       for (const b of list) {
+        if (!b.poly) continue;
         body.poly(flat(b.poly), true).fill(d.building(b.use, b.id));
         if (d.buildingStroke) body.stroke(d.buildingStroke);
         if (b.service && this.style !== 'sencillo') MapRenderer.serviceMark(body, b.service, b.cx, b.cy, 3.2, d.ink);
@@ -178,9 +219,15 @@ export class MapRenderer {
 
   /** Nombre de edificio o calle bajo un punto. */
   describe(x: number, y: number): { text: string; sub?: string } | null {
+    // sin huella (niveles afinados) vale el edificio más cercano cuyo tamaño alcanza al punto
+    let bb: Building | null = null, bd = Infinity;
     for (const b of this.data.buildings) {
       if (Math.abs(b.cx - x) > 80 || Math.abs(b.cy - y) > 80) continue;
-      if (pointInPoly(x, y, b.poly)) {
+      if (b.poly ? pointInPoly(x, y, b.poly) : Math.hypot(b.cx - x, b.cy - y) < Math.sqrt(b.area) * 0.7) { const dd = Math.hypot(b.cx - x, b.cy - y); if (dd < bd) { bd = dd; bb = b; } }
+    }
+    {
+      const b = bb;
+      if (b) {
         const use = { residential: 'Viviendas', commercial: 'Comercio y oficinas', industrial: 'Industria', public: 'Equipamiento' }[b.use];
         const people = b.use === 'residential' ? `${Math.max(2, Math.round((b.area * b.levels) / 35))} vecinos aprox.` : `${Math.max(2, Math.round((b.area * b.levels) / 25))} empleos aprox.`;
         return { text: b.name ?? use, sub: `${b.name ? use + ' · ' : ''}${b.levels} plantas · ${people}` };

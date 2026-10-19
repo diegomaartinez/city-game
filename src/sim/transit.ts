@@ -1,6 +1,6 @@
 // Red de transporte: paradas, líneas, vehículos y viajeros, con búsqueda de rutas por la red.
 import type { City, Pt } from '../data/types.ts';
-import { DRIVABLE, NEAR_STOP, ROAD_WIDTH, RoadGraph } from './graph.ts';
+import { DRIVABLE, NEAR_STOP, RoadGraph } from './graph.ts';
 
 export type Mode = 'bus' | 'metro' | 'train' | 'plane' | 'ship' | 'hub';
 
@@ -198,13 +198,9 @@ export class Network {
     const e = this.graph.edges[hit.edge];
     const a = this.graph.nodes[e.a], b = this.graph.nodes[e.b];
     const rx = a.x + (b.x - a.x) * hit.t, ry = a.y + (b.y - a.y) * hit.t;
-    // la marquesina queda a un lado de la calle, del lado donde se hizo clic
-    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
-    const side = (x - rx) * nx + (y - ry) * ny >= 0 ? 1 : -1;
-    const off = ROAD_WIDTH[e.cls] / 2 + 3;
+    // la parada va en medio de la calle: vale para los dos sentidos
     for (const s of this.stops.values()) if (s.mode === 'bus' && Math.hypot(s.rx - rx, s.ry - ry) < 40) return { ok: false, x, y, rx, ry, edge: hit.edge, t: hit.t, reason: 'Demasiado cerca de otra parada' };
-    return { ok: true, x: rx + nx * off * side, y: ry + ny * off * side, rx, ry, edge: hit.edge, t: hit.t, name: e.name ?? this.nearestStreetName(x, y) };
+    return { ok: true, x: rx, y: ry, rx, ry, edge: hit.edge, t: hit.t, name: e.name ?? this.nearestStreetName(x, y) };
   }
 
   private nearestDrivableEdge(x: number, y: number, maxDist: number): { edge: number; t: number; d: number } | null {

@@ -1,9 +1,16 @@
 // Pantalla de inicio: elegir un nivel (ciudad ya preparada), el modo de juego y continuar o empezar.
+import { gunzipSync } from 'fflate';
 import { cache } from '../data/cache.ts';
 import type { CityData } from '../data/types.ts';
 import { GAME_MODES, GAME_MODE_LIST, type GameMode, type SaveData } from '../sim/game.ts';
 
-export interface StartResult { city: CityData; key: string; mode: GameMode; save?: SaveData }
+export interface StartResult {
+  city: CityData; key: string; mode: GameMode; save?: SaveData;
+  /** Cambia el texto de la pantalla de carga (sigue visible mientras se prepara y dibuja la ciudad). */
+  status: (text: string) => void;
+  /** Quita la pantalla de carga: se llama cuando el mapa ya está en pantalla. */
+  done: () => void;
+}
 
 /** Entrada del índice de niveles (public/levels/index.json, generado por scripts/build-levels.ts). */
 export interface LevelInfo { id: string; kind?: 'city' | 'country'; name: string; subtitle: string; radius: number; population: number; jobs: number; buildings: number; cities?: number; districts: number; file: string; bytes: number; version: number }
@@ -27,8 +34,24 @@ export async function loadLevel(info: LevelInfo, onProgress?: (bytes: number) =>
   // cuenta los bytes que llegan para la barra de progreso
   let got = 0;
   const counted = r.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ transform(chunk, ctrl) { got += chunk.byteLength; onProgress?.(got); ctrl.enqueue(chunk); } }));
-  const stream = typeof DecompressionStream === 'function' ? counted.pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>) : counted;
-  const city = (await new Response(stream).json()) as CityData;
+  // algunos servidores (el de desarrollo, por ejemplo) ya descomprimen el .gz por el camino: se mira la cabecera gzip
+  const reader = counted.getReader();
+  const first = await reader.read();
+  const head = first.value ?? new Uint8Array();
+  const gzipped = head.length >= 2 && head[0] === 0x1f && head[1] === 0x8b;
+  const rest = new ReadableStream<Uint8Array>({
+    start(ctrl) { if (head.length) ctrl.enqueue(head); if (first.done) ctrl.close(); },
+    async pull(ctrl) { const { value, done } = await reader.read(); if (done) ctrl.close(); else ctrl.enqueue(value); },
+  });
+  let city: CityData;
+  if (gzipped && typeof DecompressionStream !== 'function') {
+    // navegadores sin DecompressionStream (Safari antiguo): se descomprime en memoria
+    const bytes = new Uint8Array(await new Response(rest).arrayBuffer());
+    city = JSON.parse(new TextDecoder().decode(gunzipSync(bytes))) as CityData;
+  } else {
+    const stream = gzipped ? rest.pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>) : rest;
+    city = (await new Response(stream).json()) as CityData;
+  }
   if (!city.roads?.length && !city.cities?.length) throw new Error('El nivel está vacío o dañado');
   return city;
 }
@@ -105,7 +128,7 @@ export function showStart(): Promise<StartResult> {
       for (const b of modeButtons) b.disabled = !!save;
     };
 
-    const finish = (r: StartResult) => { root.remove(); resolve(r); };
+    const finish = (r: Omit<StartResult, 'status' | 'done'>) => resolve({ ...r, status: t => { if (root.isConnected) progress.textContent = t; }, done: () => root.remove() });
 
     const play = async () => {
       if (!level) return;
@@ -117,7 +140,7 @@ export function showStart(): Promise<StartResult> {
       try {
         const city = await loadLevel(l, bytes => { barFill.style.width = `${Math.min(90, 3 + (90 * bytes) / l.bytes)}%`; });
         barFill.style.width = '100%';
-        progress.textContent = '¡Vamos!';
+        progress.textContent = 'Preparando la ciudad…';
         finish({ city, key: keyOf(l), mode: save?.mode ?? mode, save });
       } catch (e) {
         progress.innerHTML = `<span class="error">${(e as Error).message}</span>`;

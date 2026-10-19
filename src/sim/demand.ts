@@ -276,8 +276,8 @@ export class Demand {
   }
 
   /** Viviendas con su población estimada, para el mapa de población. */
-  populationPoints(): Array<{ x: number; y: number; people: number; poly?: Pt[] }> {
-    return this.homes.map((b, i) => ({ x: b.x, y: b.y, people: this.homeW[i] - (i ? this.homeW[i - 1] : 0), poly: b.poly }));
+  populationPoints(): Array<{ x: number; y: number; people: number }> {
+    return this.homes.map((b, i) => ({ x: b.x, y: b.y, people: this.homeW[i] - (i ? this.homeW[i - 1] : 0) }));
   }
 
   /** Cierre del día: la demanda sin cubrir de los hexágonos se atenúa, los barrios cierran cuentas. */

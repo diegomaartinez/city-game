@@ -9,6 +9,7 @@ import { parseOsm } from '../src/data/parse.ts';
 import { Projection } from '../src/data/geo.ts';
 import { CITY_VERSION } from '../src/data/types.ts';
 import { compact } from '../src/data/compact.ts';
+import { refine } from './refine.ts';
 import { Game } from '../src/sim/game.ts';
 
 interface LevelDef { id: string; name: string; subtitle: string; lat: number; lon: number; radius: number; /** Población real del área (para calibrar la estimación). */ population?: number; core: { south: number; west: number; north: number; east: number } }
@@ -47,6 +48,8 @@ for (const def of defs) {
   const { city, stats } = parseOsm(main, def.name, def.lat, def.lon, def.radius, coreBox);
   console.log(`  ${stats.roads} calles, ${stats.buildings} edificios, ${stats.areas} áreas, ${city.zones.length} zonas, ${city.places?.length ?? 0} barrios`);
   compact(city);
+  const ref = refine(city);
+  console.log(`  afinado: ${ref.merged} puntos de calzadas dobles fundidos, ${ref.blocks} manzanas, puntos de calle ${ref.pts[0]} → ${ref.pts[1]}`);
   // calibración: la estimación por superficie suele pasarse; se ajusta a la población real si se conoce
   if (def.population) {
     const est = new Game(city, 'creativo').demand.population;

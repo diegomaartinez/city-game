@@ -42,7 +42,7 @@ export class World {
   halfW = 0;
   halfH = 0;
 
-  drawGround(radius: number, bg: number, patches: [number, number] | null, backdrop: number, halfW = radius, halfH = radius): void {
+  drawGround(radius: number, bg: number, patches: [number, number] | null, backdrop: number, halfW = radius, halfH = radius, island = true): void {
     const g = this.ground;
     g.clear();
     this.app.renderer.background.color = backdrop;
@@ -65,9 +65,12 @@ export class World {
     const sh = this.islandShadow;
     sh.clear();
     const d = Math.max(10, Math.max(W, H) * 0.012);
-    sh.rect(-W + d * 0.6, -H + d, W * 2, H * 2).fill({ color: 0x000000, alpha: 0.10 });
-    sh.rect(-W + d * 1.4, -H + d * 2.2, W * 2, H * 2).fill({ color: 0x000000, alpha: 0.05 });
-    sh.rect(-W, -H, W * 2, H * 2).stroke({ color: 0xffffff, width: Math.max(2, Math.max(W, H) * 0.002), alpha: 0.7 });
+    if (island) {
+      sh.rect(-W + d * 0.6, -H + d, W * 2, H * 2).fill({ color: 0x000000, alpha: 0.10 });
+      sh.rect(-W + d * 1.4, -H + d * 2.2, W * 2, H * 2).fill({ color: 0x000000, alpha: 0.05 });
+    }
+    // el borde jugable siempre se marca, aunque sea con un filo fino sobre el mar
+    sh.rect(-W, -H, W * 2, H * 2).stroke({ color: 0xffffff, width: Math.max(2, Math.max(W, H) * 0.002), alpha: island ? 0.7 : 0.45 });
   }
 
   get width(): number { return this.app.renderer.width / this.app.renderer.resolution; }

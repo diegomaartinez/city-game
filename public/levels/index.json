@@ -26,7 +26,7 @@
     "buildings": 38715,
     "districts": 42,
     "file": "coruna.json.gz",
-    "bytes": 4015464,
+    "bytes": 3474852,
     "version": 4,
     "builtAt": "2026-10-16T17:34:45.308Z",
     "def": "{\"id\":\"coruna\",\"name\":\"A Coruña\",\"subtitle\":\"La ciudad y su área metropolitana: Oleiros, Culleredo, Cambre, Arteixo y Sada.\",\"lat\":43.335,\"lon\":-8.39,\"radius\":10500,\"population\":400000,\"core\":{\"south\":43.28,\"west\":-8.53,\"north\":43.4,\"east\":-8.3}}"
